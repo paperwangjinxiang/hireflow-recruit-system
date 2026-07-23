@@ -1,11 +1,11 @@
 import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { Contact, FileUp, UserCheck, Clock, TrendingUp, BellRing, CalendarClock, Copy, Timer, UserX, MessageSquareWarning } from 'lucide-react'
+import { Contact, FileUp, UserCheck, Clock, TrendingUp, BellRing, CalendarClock, Copy, Timer, UserX, MessageSquareWarning, Lock } from 'lucide-react'
 import { format, startOfToday, endOfWeek } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useStore } from '@/lib/store'
 import { computeReminders, LEVEL_STYLES, type Reminder } from '@/lib/reminders'
-import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, RESULT_LABELS, RESULT_COLORS } from '@/types'
+import { STAGE_LABELS, STAGE_COLORS, RESULT_LABELS, RESULT_COLORS, FUNNEL_STAGES, TERMINAL_STAGES } from '@/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,7 @@ const REMINDER_ICONS = {
   unassigned: UserX,
   duplicate: Copy,
   feedback: MessageSquareWarning,
+  lock: Lock,
 } as const
 
 export default function Dashboard() {
@@ -33,12 +34,13 @@ export default function Dashboard() {
   }
 
   const stats = useMemo(() => {
-    const byStage = Object.fromEntries(STAGE_ORDER.map((s) => [s, 0])) as Record<string, number>
-    resumes.forEach((r) => byStage[r.stage]++)
+    const byStage = Object.fromEntries([...FUNNEL_STAGES, ...TERMINAL_STAGES].map((s) => [s, 0])) as Record<string, number>
+    resumes.forEach((r) => { byStage[r.stage] = (byStage[r.stage] ?? 0) + 1 })
     const week = Date.now() - 7 * 24 * 60 * 60 * 1000
     const newThisWeek = resumes.filter((r) => r.createdAt >= week).length
-    const assignedToMe = resumes.filter((r) => r.assigneeId === currentUser.id && r.stage !== 'hired' && r.stage !== 'rejected').length
-    const active = resumes.filter((r) => r.stage !== 'hired' && r.stage !== 'rejected').length
+    const isActive = (s: string) => !TERMINAL_STAGES.includes(s as (typeof TERMINAL_STAGES)[number])
+    const assignedToMe = resumes.filter((r) => r.assigneeId === currentUser.id && isActive(r.stage)).length
+    const active = resumes.filter((r) => isActive(r.stage)).length
     return { byStage, newThisWeek, assignedToMe, active }
   }, [resumes, currentUser.id])
 
@@ -152,7 +154,7 @@ export default function Dashboard() {
         <Card className="lg:col-span-3">
           <CardHeader><CardTitle>招聘漏斗</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            {STAGE_ORDER.map((stage) => {
+            {FUNNEL_STAGES.map((stage) => {
               const count = stats.byStage[stage]
               const pct = resumes.length ? Math.round((count / resumes.length) * 100) : 0
               return (
@@ -167,6 +169,13 @@ export default function Dashboard() {
                 </div>
               )
             })}
+            <div className="flex flex-wrap gap-2 border-t pt-3">
+              {TERMINAL_STAGES.map((stage) => (
+                <Badge key={stage} variant="outline" className={STAGE_COLORS[stage]}>
+                  {STAGE_LABELS[stage]} {stats.byStage[stage]}
+                </Badge>
+              ))}
+            </div>
           </CardContent>
         </Card>
 

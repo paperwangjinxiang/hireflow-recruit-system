@@ -33,7 +33,7 @@ export default function Team() {
       const w = map.get(r.assigneeId)
       if (!w) return
       w.total++
-      if (r.stage !== 'hired' && r.stage !== 'rejected') w.active++
+      if (!['rejected', 'onboarded', 'offboarded', 'blacklisted'].includes(r.stage)) w.active++
     })
     return map
   }, [users, resumes])

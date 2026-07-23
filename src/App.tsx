@@ -4,6 +4,7 @@ import { StoreProvider } from '@/lib/store'
 import Layout from '@/components/Layout'
 import Dashboard from '@/pages/Dashboard'
 import Resumes from '@/pages/Resumes'
+import Jobs from '@/pages/Jobs'
 import ImportPage from '@/pages/ImportPage'
 import Team from '@/pages/Team'
 
@@ -15,6 +16,7 @@ export default function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/jobs" element={<Jobs />} />
           <Route path="/resumes" element={<Resumes />} />
           <Route path="/import" element={<ImportPage />} />
           <Route

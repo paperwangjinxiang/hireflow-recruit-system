@@ -136,8 +136,15 @@ export default function AiParse() {
         company: i.fields.company,
         certificates: i.fields.certificates,
         tags: i.fields.tags,
+        age: i.fields.age,
+        certStage: i.fields.certStage,
+        certSubject: i.fields.certSubject,
+        gradYear: i.fields.gradYear,
+        hometown: i.fields.hometown,
+        fullTime: i.fields.fullTime,
+        major: i.fields.major,
         source: i.method === 'ai' ? 'AI 解析' : '智能解析',
-        stage: 'new' as const,
+        stage: 'imported' as const,
         assigneeId: null,
         initialNote: `【${i.fileName} 解析导入】原文摘要：\n${i.rawText.slice(0, 400)}${i.rawText.length > 400 ? '……' : ''}`,
       })),
@@ -359,15 +366,17 @@ export default function AiParse() {
                         onChange={(e) => updateField(item.id, { skills: e.target.value.split(/[、,，;；]/).map((s) => s.trim()).filter(Boolean) })}
                       />
                     </div>
-                    {(item.fields.university || item.fields.company || item.fields.certificates.length > 0 || item.fields.tags.length > 0) && (
+                    {(item.fields.university || item.fields.company || item.fields.certStage || item.fields.certificates.length > 0 || item.fields.tags.length > 0) && (
                       <div className="col-span-2 space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
-                        {(item.fields.university || item.fields.company) && (
-                          <div className="text-slate-600">
-                            {item.fields.university && <span>毕业院校：{item.fields.university}</span>}
-                            {item.fields.university && item.fields.company && <span className="mx-2 text-slate-300">|</span>}
-                            {item.fields.company && <span>最近任职：{item.fields.company}</span>}
-                          </div>
-                        )}
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-600">
+                          {item.fields.age > 0 && <span>年龄：{item.fields.age} 岁</span>}
+                          {item.fields.certStage && <span className="font-medium text-teal-700">{item.fields.certStage}{item.fields.certSubject}教资</span>}
+                          {item.fields.university && <span>院校：{item.fields.university}{item.fields.fullTime !== '未知' ? `（${item.fields.fullTime}）` : ''}</span>}
+                          {item.fields.major && <span>专业：{item.fields.major}</span>}
+                          {item.fields.gradYear > 0 && <span>{item.fields.gradYear} 年毕业</span>}
+                          {item.fields.hometown && <span>籍贯：{item.fields.hometown}</span>}
+                          {item.fields.company && <span>最近任职：{item.fields.company}</span>}
+                        </div>
                         {item.fields.certificates.length > 0 && (
                           <div className="flex flex-wrap items-center gap-1">
                             <span className="text-slate-500">证书：</span>
@@ -398,7 +407,12 @@ export default function AiParse() {
 }
 
 function emptyFields(): ParsedFields {
-  return { name: '', phone: '', email: '', position: '', education: '未知', experience: 0, skills: [], university: '', company: '', certificates: [], tags: [], lowConfidence: [] }
+  return {
+    name: '', phone: '', email: '', position: '', education: '未知', experience: 0,
+    skills: [], university: '', company: '', certificates: [], tags: [],
+    age: 0, certStage: '', certSubject: '', gradYear: 0, hometown: '', fullTime: '未知', major: '',
+    lowConfidence: [],
+  }
 }
 
 function FieldInput({ label, value, onChange, warn }: { label: string; value: string; onChange: (v: string) => void; warn?: boolean }) {

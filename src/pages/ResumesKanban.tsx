@@ -4,11 +4,11 @@ import { useStore } from '@/lib/store'
 import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { MessageSquare, GripVertical, Star } from 'lucide-react'
+import { MessageSquare, Lock, Star } from 'lucide-react'
 import { tagColor } from '@/lib/tags'
 import { cn } from '@/lib/utils'
 
-/** 简历看板：按阶段分列，拖拽卡片流转阶段，点击卡片查看详情 */
+/** 简历看板：按招聘流程分列（导入→筛选→匹配→面试→录用→不通过→入职→离职→黑名单），拖拽卡片流转阶段 */
 export default function ResumesKanban({
   resumes,
   onCardClick,
@@ -16,7 +16,7 @@ export default function ResumesKanban({
   resumes: Resume[]
   onCardClick: (id: string) => void
 }) {
-  const { users, currentUser, dispatch } = useStore()
+  const { users, jobs, currentUser, dispatch } = useStore()
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
 
@@ -28,12 +28,16 @@ export default function ResumesKanban({
     const resume = resumes.find((r) => r.id === draggingId)
     setDraggingId(null)
     if (!resume || resume.stage === stage) return
+    if (stage === 'matched') {
+      toast.error('「岗位匹配」需要选择具体职位锁定，请在详情页或职位发布页操作')
+      return
+    }
     dispatch({ type: 'updateStage', ids: [resume.id], stage, actorId: currentUser.id })
     toast.success(`已将 ${resume.name} 移至「${STAGE_LABELS[stage]}」`)
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="flex gap-3 overflow-x-auto pb-3">
       {STAGE_ORDER.map((stage) => {
         const list = byStage(stage)
         const isOver = dragOverStage === stage
@@ -41,7 +45,7 @@ export default function ResumesKanban({
           <div
             key={stage}
             className={cn(
-              'flex min-h-96 flex-col rounded-lg border bg-slate-100/70 transition-colors',
+              'flex min-h-96 w-64 shrink-0 flex-col rounded-lg border bg-slate-100/70 transition-colors',
               isOver && 'border-indigo-400 bg-indigo-50 ring-2 ring-indigo-200',
             )}
             onDragOver={(e) => {
@@ -63,6 +67,7 @@ export default function ResumesKanban({
             <div className="flex-1 space-y-2 overflow-y-auto px-2 pb-2">
               {list.map((r) => {
                 const assignee = users.find((u) => u.id === r.assigneeId)
+                const job = jobs.find((j) => j.id === r.jobId)
                 return (
                   <div
                     key={r.id}
@@ -84,6 +89,7 @@ export default function ResumesKanban({
                     <div className="flex items-start justify-between gap-1">
                       <span className="flex items-center gap-1 font-medium leading-tight">
                         {r.name}
+                        {r.age > 0 && <span className="text-xs font-normal text-slate-400">{r.age}岁</span>}
                         {r.rating > 0 && (
                           <span className="flex items-center">
                             {Array.from({ length: r.rating }).map((_, i) => (
@@ -92,18 +98,16 @@ export default function ResumesKanban({
                           </span>
                         )}
                       </span>
-                      <GripVertical className="h-4 w-4 shrink-0 text-slate-300 group-hover:text-slate-400" />
+                      {job && <Lock className="h-3.5 w-3.5 shrink-0 text-cyan-600" />}
                     </div>
-                    <p className="mt-0.5 truncate text-xs text-slate-500">{r.position} · {r.experience} 年</p>
-                    {r.skills.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {r.skills.slice(0, 3).map((s) => (
-                          <Badge key={s} variant="secondary" className="px-1.5 py-0 text-[10px]">{s}</Badge>
-                        ))}
-                        {r.skills.length > 3 && (
-                          <span className="text-[10px] text-slate-400">+{r.skills.length - 3}</span>
-                        )}
-                      </div>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
+                      {r.certStage || '无'}{r.certSubject}教资 · {r.experience} 年
+                    </p>
+                    <p className="truncate text-xs text-slate-400">
+                      {r.university || '院校未知'}{r.fullTime !== '未知' ? `（${r.fullTime}）` : ''}{r.gradYear > 0 ? ` · ${r.gradYear}届` : ''}
+                    </p>
+                    {job && (
+                      <p className="mt-1 truncate text-[11px] text-cyan-700">{job.school} · {job.level}{job.subject}</p>
                     )}
                     {r.tags.length > 0 && (
                       <div className="mt-1.5 flex flex-wrap gap-1">

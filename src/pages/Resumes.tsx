@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star } from 'lucide-react'
+import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
 import { tagColor } from '@/lib/tags'
@@ -22,7 +22,7 @@ import ResumesKanban from './ResumesKanban'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 export default function Resumes() {
-  const { resumes, users, currentUser, dispatch } = useStore()
+  const { resumes, users, jobs, currentUser, dispatch } = useStore()
   const [searchParams] = useSearchParams()
   const [keyword, setKeyword] = useState('')
   const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
@@ -38,7 +38,7 @@ export default function Resumes() {
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
     return resumes.filter((r) => {
-      if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
+      if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, r.major, r.hometown, r.certSubject, r.certStage, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
       if (stageFilter !== 'all' && r.stage !== stageFilter) return false
       if (assigneeFilter === 'me' && r.assigneeId !== currentUser.id) return false
       if (assigneeFilter === 'unassigned' && r.assigneeId) return false
@@ -171,26 +171,32 @@ export default function Resumes() {
 
       {/* 表格视图 */}
       {view === 'table' && (
-      <div className="rounded-lg border bg-white">
-        <Table>
+      <div className="overflow-x-auto rounded-lg border bg-white">
+        <Table className="min-w-[1280px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-10">
                 <Checkbox checked={allChecked} onCheckedChange={(c) => toggleAll(!!c)} />
               </TableHead>
-              <TableHead>候选人</TableHead>
-              <TableHead>应聘职位</TableHead>
-              <TableHead>经验 / 学历</TableHead>
-              <TableHead>来源</TableHead>
+              <TableHead>姓名</TableHead>
+              <TableHead>年龄</TableHead>
+              <TableHead>教资学段</TableHead>
+              <TableHead>教资科目</TableHead>
+              <TableHead>毕业年份</TableHead>
+              <TableHead>籍贯</TableHead>
+              <TableHead>毕业院校</TableHead>
+              <TableHead>专业</TableHead>
+              <TableHead>经验</TableHead>
               <TableHead>标签</TableHead>
               <TableHead>阶段</TableHead>
+              <TableHead>锁定岗位</TableHead>
               <TableHead>负责人</TableHead>
-              <TableHead className="text-right">更新时间</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.map((r: Resume) => {
               const assignee = users.find((u) => u.id === r.assigneeId)
+              const job = jobs.find((j) => j.id === r.jobId)
               return (
                 <TableRow key={r.id} className="cursor-pointer" onClick={() => setDetailId(r.id)}>
                   <TableCell onClick={(e) => e.stopPropagation()}>
@@ -209,11 +215,31 @@ export default function Resumes() {
                     </div>
                     <div className="text-xs text-slate-400">{r.phone}</div>
                   </TableCell>
-                  <TableCell>{r.position}</TableCell>
-                  <TableCell className="text-slate-600">{r.experience} 年 · {r.education}</TableCell>
-                  <TableCell className="text-slate-600">{r.source}</TableCell>
+                  <TableCell className="text-slate-600">{r.age > 0 ? `${r.age} 岁` : '—'}</TableCell>
                   <TableCell>
-                    <div className="flex max-w-[180px] flex-wrap gap-1">
+                    {r.certStage ? (
+                      <Badge variant="outline" className="bg-teal-50 text-teal-700 border-teal-200">{r.certStage}</Badge>
+                    ) : (
+                      <span className="text-xs text-slate-400">无证</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-slate-600">{r.certSubject || '—'}</TableCell>
+                  <TableCell className="text-slate-600">{r.gradYear > 0 ? r.gradYear : '—'}</TableCell>
+                  <TableCell className="text-slate-600">{r.hometown || '—'}</TableCell>
+                  <TableCell>
+                    <div className="max-w-[160px]">
+                      <div className="truncate text-slate-700">{r.university || '—'}</div>
+                      {r.fullTime !== '未知' && (
+                        <Badge variant="outline" className={`mt-0.5 text-[10px] ${r.fullTime === '全日制' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                          {r.fullTime}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-[120px] truncate text-slate-600">{r.major || '—'}</TableCell>
+                  <TableCell className="text-slate-600">{r.experience} 年</TableCell>
+                  <TableCell>
+                    <div className="flex max-w-[150px] flex-wrap gap-1">
                       {r.tags.slice(0, 2).map((t) => (
                         <Badge key={t} variant="outline" className={`text-[11px] ${tagColor(t)}`}>{t}</Badge>
                       ))}
@@ -221,6 +247,15 @@ export default function Resumes() {
                     </div>
                   </TableCell>
                   <TableCell><Badge variant="outline" className={STAGE_COLORS[r.stage]}>{STAGE_LABELS[r.stage]}</Badge></TableCell>
+                  <TableCell>
+                    {job ? (
+                      <span className="flex items-center gap-1 text-xs text-cyan-700">
+                        <Lock className="h-3 w-3" />{job.school}·{job.level}{job.subject}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-300">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     {assignee ? (
                       <span className="flex items-center gap-2">
@@ -233,15 +268,12 @@ export default function Resumes() {
                       <span className="text-sm text-slate-400">未分配</span>
                     )}
                   </TableCell>
-                  <TableCell className="text-right text-sm text-slate-400">
-                    {new Date(r.updatedAt).toLocaleDateString('zh-CN')}
-                  </TableCell>
                 </TableRow>
               )
             })}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="py-12 text-center text-slate-400">
+                <TableCell colSpan={14} className="py-12 text-center text-slate-400">
                   没有符合条件的简历，试试调整筛选条件或<Link to="/import" className="text-indigo-600 hover:underline">批量导入</Link>
                 </TableCell>
               </TableRow>

@@ -20,7 +20,7 @@ export default function InterviewSection({ resume }: { resume: Resume }) {
   const [interviewerId, setInterviewerId] = useState(users.find((u) => u.role === 'interviewer')?.id ?? users[0].id)
   const [location, setLocation] = useState('')
   const [markingId, setMarkingId] = useState<string | null>(null)
-  const [markResult, setMarkResult] = useState<'pass' | 'fail'>('pass')
+  const [markResult, setMarkResult] = useState<'pass' | 'fail' | 'declined'>('pass')
   const [feedback, setFeedback] = useState('')
 
   const list = interviews
@@ -51,8 +51,8 @@ export default function InterviewSection({ resume }: { resume: Resume }) {
     setShowForm(false)
     setTime('')
     setLocation('')
-    // 自动把新简历/筛选中流转到面试中
-    if (resume.stage === 'new' || resume.stage === 'screening') {
+    // 自动把导入/筛选/匹配阶段的候选人流转到面试
+    if (resume.stage === 'imported' || resume.stage === 'screening' || resume.stage === 'matched') {
       dispatch({ type: 'updateStage', ids: [resume.id], stage: 'interview', actorId: currentUser.id })
     }
   }
@@ -147,12 +147,15 @@ export default function InterviewSection({ resume }: { resume: Resume }) {
               <p className="mt-2 rounded bg-slate-50 p-2 text-xs text-slate-600">{iv.feedback}</p>
             )}
             {iv.result === 'pending' && (
-              <div className="mt-2 flex gap-2">
+              <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" className="h-7 text-xs text-emerald-600" onClick={() => { setMarkingId(iv.id); setMarkResult('pass'); setFeedback('') }}>
                   标记通过
                 </Button>
                 <Button size="sm" variant="outline" className="h-7 text-xs text-rose-600" onClick={() => { setMarkingId(iv.id); setMarkResult('fail'); setFeedback('') }}>
                   标记未通过
+                </Button>
+                <Button size="sm" variant="outline" className="h-7 text-xs text-slate-500" onClick={() => { setMarkingId(iv.id); setMarkResult('declined'); setFeedback('') }}>
+                  候选人拒绝
                 </Button>
               </div>
             )}

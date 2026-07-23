@@ -7,7 +7,7 @@ export type ReminderLevel = 'urgent' | 'warn' | 'info'
 export interface Reminder {
   id: string
   level: ReminderLevel
-  icon: 'interview' | 'stale' | 'unassigned' | 'duplicate' | 'feedback'
+  icon: 'interview' | 'stale' | 'unassigned' | 'duplicate' | 'feedback' | 'lock'
   title: string
   detail: string
   /** 点击后跳转到简历库并自动套用的筛选 */
@@ -15,6 +15,9 @@ export interface Reminder {
 }
 
 const DAY = 24 * 60 * 60 * 1000
+
+/** 处于终态（不再活跃跟进）的阶段 */
+const TERMINAL: Stage[] = ['rejected', 'onboarded', 'offboarded', 'blacklisted']
 
 export function computeReminders(resumes: Resume[], interviews: Interview[]): Reminder[] {
   const now = Date.now()
@@ -52,20 +55,33 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
     })
   }
 
-  // 3. 新简历滞留（超过 2 天未筛选）
-  const staleNew = resumes.filter((r) => r.stage === 'new' && now - r.updatedAt > 2 * DAY)
+  // 3. 新导入简历滞留（超过 2 天未筛选）
+  const staleNew = resumes.filter((r) => r.stage === 'imported' && now - r.updatedAt > 2 * DAY)
   if (staleNew.length > 0) {
     reminders.push({
       id: 'stale-new',
       level: 'warn',
       icon: 'stale',
-      title: `${staleNew.length} 份新简历超过 2 天未筛选`,
+      title: `${staleNew.length} 份新导入简历超过 2 天未筛选`,
       detail: `最早一份已滞留 ${Math.floor((now - Math.min(...staleNew.map((r) => r.updatedAt))) / DAY)} 天`,
-      filter: { stage: 'new' },
+      filter: { stage: 'imported' },
     })
   }
 
-  // 4. 流程滞留（筛选中/面试中超过 5 天）
+  // 4. 岗位锁定超 3 天未安排面试
+  const staleLocked = resumes.filter((r) => r.stage === 'matched' && r.lockedAt && now - r.lockedAt > 3 * DAY)
+  if (staleLocked.length > 0) {
+    reminders.push({
+      id: 'stale-locked',
+      level: 'warn',
+      icon: 'lock',
+      title: `${staleLocked.length} 份简历锁定超 3 天未安排面试`,
+      detail: '长时间占用岗位锁定会影响其他同事匹配，请尽快安排面试或释放',
+      filter: { stage: 'matched' },
+    })
+  }
+
+  // 5. 流程滞留（筛选/面试超过 5 天）
   const staleFlow = resumes.filter((r) => (r.stage === 'screening' || r.stage === 'interview') && now - r.updatedAt > 5 * DAY)
   if (staleFlow.length > 0) {
     const byStage = (s: Stage) => staleFlow.filter((r) => r.stage === s).length
@@ -79,8 +95,8 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
     })
   }
 
-  // 5. 未分配简历
-  const unassigned = resumes.filter((r) => !r.assigneeId && r.stage !== 'hired' && r.stage !== 'rejected')
+  // 6. 未分配简历
+  const unassigned = resumes.filter((r) => !r.assigneeId && !TERMINAL.includes(r.stage))
   if (unassigned.length > 0) {
     reminders.push({
       id: 'unassigned',
@@ -92,7 +108,7 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
     })
   }
 
-  // 6. 疑似重复简历（同手机号或同邮箱）
+  // 7. 疑似重复简历（同手机号或同邮箱）
   const seen = new Map<string, number>()
   resumes.forEach((r) => {
     const key = r.phone || r.email

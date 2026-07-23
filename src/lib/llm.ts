@@ -25,13 +25,21 @@ export function saveLlmConfig(config: LlmConfig) {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
 }
 
-const PROMPT = `你是简历解析助手。从下面的简历文本中抽取字段，只输出 JSON，不要输出任何其他内容。
-JSON 格式：{"name":"","phone":"","email":"","position":"","education":"","experience":0,"skills":[]}
+const PROMPT = `你是教师招聘简历解析助手。从下面的简历文本中抽取字段，只输出 JSON，不要输出任何其他内容。
+JSON 格式：{"name":"","phone":"","email":"","position":"","education":"","experience":0,"skills":[],"age":0,"certStage":"","certSubject":"","gradYear":0,"hometown":"","fullTime":"未知","major":"","university":""}
 要求：
 - education 只能是：博士/硕士/本科/大专/高中/未知 之一
-- experience 是数字，表示工作年限，无法判断则为 0
+- experience 是数字，表示工作年限（教龄），无法判断则为 0
 - skills 是字符串数组，最多 12 个
-- 找不到的字段留空字符串
+- age 是数字年龄，无法判断则为 0
+- certStage 是教师资格证学段：幼儿园/小学/初中/高中 之一，没有教师资格证则留空
+- certSubject 是教师资格证科目：语文/数学/英语/物理/化学/生物/历史/地理/政治/音乐/体育/美术/信息技术/科学/心理健康 之一，没有则留空
+- gradYear 是最高学历毕业年份（数字），无法判断则为 0
+- hometown 是籍贯（如 湖北武汉），找不到留空
+- fullTime 是最高学历是否全日制：全日制/非全日制/未知 之一
+- major 是专业名称（如 汉语言文学），找不到留空
+- university 是毕业院校全称，找不到留空
+- 其他找不到的字段留空字符串
 
 简历文本：
 `
@@ -59,6 +67,7 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
   const jsonEnd = content.lastIndexOf('}')
   if (jsonStart < 0 || jsonEnd < 0) throw new Error('AI 返回内容不是有效 JSON')
   const parsed = JSON.parse(content.slice(jsonStart, jsonEnd + 1))
+  const certStages = ['幼儿园', '小学', '初中', '高中']
   return {
     name: typeof parsed.name === 'string' ? parsed.name : undefined,
     phone: typeof parsed.phone === 'string' ? parsed.phone : undefined,
@@ -67,6 +76,14 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
     education: typeof parsed.education === 'string' ? parsed.education : undefined,
     experience: typeof parsed.experience === 'number' ? parsed.experience : undefined,
     skills: Array.isArray(parsed.skills) ? parsed.skills.filter((s: unknown) => typeof s === 'string') : undefined,
+    age: typeof parsed.age === 'number' ? parsed.age : undefined,
+    certStage: certStages.includes(parsed.certStage) ? parsed.certStage : undefined,
+    certSubject: typeof parsed.certSubject === 'string' ? parsed.certSubject : undefined,
+    gradYear: typeof parsed.gradYear === 'number' ? parsed.gradYear : undefined,
+    hometown: typeof parsed.hometown === 'string' ? parsed.hometown : undefined,
+    fullTime: ['全日制', '非全日制', '未知'].includes(parsed.fullTime) ? parsed.fullTime : undefined,
+    major: typeof parsed.major === 'string' ? parsed.major : undefined,
+    university: typeof parsed.university === 'string' ? parsed.university : undefined,
   }
 }
 
@@ -81,10 +98,18 @@ export function mergeParsed(local: ParsedFields, llm: Partial<ParsedFields>): Pa
     education: llm.education || local.education,
     experience: llm.experience ?? local.experience,
     skills: llm.skills?.length ? llm.skills : local.skills,
+    age: llm.age || local.age,
+    certStage: llm.certStage || local.certStage,
+    certSubject: llm.certSubject || local.certSubject,
+    gradYear: llm.gradYear || local.gradYear,
+    hometown: llm.hometown || local.hometown,
+    fullTime: llm.fullTime || local.fullTime,
+    major: llm.major || local.major,
+    university: llm.university || local.university,
     lowConfidence: local.lowConfidence.filter((f) => {
       const key = f as keyof ParsedFields
       const v = llm[key as keyof Partial<ParsedFields>]
-      return v === undefined || v === '' || (Array.isArray(v) && v.length === 0)
+      return v === undefined || v === '' || v === 0 || (Array.isArray(v) && v.length === 0)
     }),
   }
   return merged

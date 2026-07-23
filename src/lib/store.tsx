@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
-import type { Activity, Interview, Resume, Stage, User } from '@/types'
+import type { Activity, Interview, Job, Resume, Stage, User } from '@/types'
 import { STAGE_LABELS, RESULT_LABELS } from '@/types'
-import { SEED_USERS, seedResumes, seedInterviews } from '@/lib/seed'
+import { SEED_USERS, seedResumes, seedInterviews, seedJobs } from '@/lib/seed'
 import { normalizeResume } from '@/lib/tags'
 import { getClientId, getSyncUrl, pullRemote, pushRemote, setSyncUrl, type SharedState } from '@/lib/sync'
 
@@ -9,6 +9,7 @@ interface State {
   users: User[]
   resumes: Resume[]
   interviews: Interview[]
+  jobs: Job[]
   currentUserId: string
 }
 
@@ -23,22 +24,38 @@ type Action =
   | { type: 'addInterview'; interview: Omit<Interview, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location'>>; actorId: string }
   | { type: 'deleteInterview'; id: string }
-  | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[] }
+  | { type: 'addJob'; job: Omit<Job, 'id' | 'createdAt'>; actorId: string }
+  | { type: 'updateJob'; id: string; patch: Partial<Pick<Job, 'region' | 'school' | 'level' | 'subject' | 'dormitory' | 'headcount' | 'status' | 'note'>>; actorId: string }
+  | { type: 'deleteJob'; id: string }
+  | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string }
+  | { type: 'releaseResumes'; ids: string[]; reason: string; toStage: Stage; actorId: string }
+  | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[] }
   | { type: 'setRating'; id: string; rating: number }
   | { type: 'resetData' }
 
 export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 
-export type ImportableResume = Omit<Resume, 'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'> & {
+export type ImportableResume = Omit<
+  Resume,
+  'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'
+  | 'age' | 'certStage' | 'certSubject' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
+> & {
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
   initialNote?: string
   university?: string
   company?: string
   certificates?: string[]
   tags?: string[]
+  age?: number
+  certStage?: Resume['certStage']
+  certSubject?: string
+  gradYear?: number
+  hometown?: string
+  fullTime?: Resume['fullTime']
+  major?: string
 }
 
-const STORAGE_KEY = 'hireflow-state-v1'
+const STORAGE_KEY = 'hireflow-state-v2'
 
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -48,9 +65,13 @@ function activity(actorId: string, action: string): Activity {
   return { id: uid('a'), actorId, action, createdAt: Date.now() }
 }
 
+function jobLabel(job: Job | undefined): string {
+  return job ? `${job.school}·${job.level}${job.subject}` : '未知岗位'
+}
+
 function seedState(currentUserId: string): State {
   const resumes = seedResumes()
-  return { users: SEED_USERS, resumes, interviews: seedInterviews(resumes), currentUserId }
+  return { users: SEED_USERS, resumes, interviews: seedInterviews(resumes), jobs: seedJobs(), currentUserId }
 }
 
 function init(): State {
@@ -59,8 +80,13 @@ function init(): State {
     if (raw) {
       const parsed = JSON.parse(raw) as State
       if (parsed.users?.length && parsed.resumes && parsed.currentUserId) {
-        // 旧版本数据缺少 interviews / 新增字段时自动补齐
-        return { ...parsed, interviews: parsed.interviews ?? [], resumes: parsed.resumes.map(normalizeResume) }
+        // 旧版本数据缺少 interviews / jobs / 新增字段时自动补齐
+        return {
+          ...parsed,
+          interviews: parsed.interviews ?? [],
+          jobs: parsed.jobs ?? [],
+          resumes: parsed.resumes.map(normalizeResume),
+        }
       }
     }
   } catch {
@@ -81,6 +107,16 @@ function reducer(state: State, action: Action): State {
           certificates: [],
           tags: [],
           rating: 0,
+          age: 0,
+          certStage: '',
+          certSubject: '',
+          gradYear: 0,
+          hometown: '',
+          fullTime: '未知',
+          major: '',
+          jobId: null,
+          lockedBy: null,
+          lockedAt: null,
           ...fields,
           id: uid('r'),
           createdAt: now,
@@ -102,6 +138,10 @@ function reducer(state: State, action: Action): State {
             ? {
                 ...r,
                 stage: action.stage,
+                // 进入终态（淘汰/黑名单/离职）时自动释放锁定
+                ...(action.stage === 'rejected' || action.stage === 'blacklisted' || action.stage === 'offboarded'
+                  ? { jobId: null, lockedBy: null, lockedAt: null }
+                  : {}),
                 updatedAt: now,
                 activities: [...r.activities, activity(action.actorId, `阶段变更为「${STAGE_LABELS[action.stage]}」`)],
               }
@@ -166,16 +206,110 @@ function reducer(state: State, action: Action): State {
         ...state,
         interviews: state.interviews.map((iv) => (iv.id === action.id ? updated : iv)),
         resumes: resultChanged
-          ? state.resumes.map((r) =>
-              r.id === target.resumeId
-                ? { ...r, updatedAt: now, activities: [...r.activities, activity(action.actorId, `${target.round}结果：${RESULT_LABELS[updated.result]}`)] }
-                : r,
-            )
+          ? state.resumes.map((r) => {
+              if (r.id !== target.resumeId) return r
+              const acts = [...r.activities, activity(action.actorId, `${target.round}结果：${RESULT_LABELS[updated.result]}`)]
+              // 通过 → 录用；未通过 → 面试不通过并释放锁定；候选人拒绝 → 回到筛选池并释放锁定
+              if (updated.result === 'pass') {
+                return { ...r, stage: 'offered' as Stage, updatedAt: now, activities: [...acts, activity(action.actorId, '面试通过，进入录用')] }
+              }
+              if (updated.result === 'fail') {
+                return {
+                  ...r,
+                  stage: 'rejected' as Stage,
+                  jobId: null, lockedBy: null, lockedAt: null,
+                  updatedAt: now,
+                  activities: [...acts, activity(action.actorId, '面试未通过，释放岗位锁定')],
+                }
+              }
+              if (updated.result === 'declined') {
+                return {
+                  ...r,
+                  stage: 'screening' as Stage,
+                  jobId: null, lockedBy: null, lockedAt: null,
+                  updatedAt: now,
+                  activities: [...acts, activity(action.actorId, '候选人拒绝面试，释放简历回筛选池')],
+                }
+              }
+              return { ...r, updatedAt: now, activities: acts }
+            })
           : state.resumes,
       }
     }
     case 'deleteInterview': {
       return { ...state, interviews: state.interviews.filter((iv) => iv.id !== action.id) }
+    }
+    case 'addJob': {
+      const job: Job = { ...action.job, id: uid('j'), createdAt: now }
+      return { ...state, jobs: [job, ...state.jobs] }
+    }
+    case 'updateJob': {
+      return {
+        ...state,
+        jobs: state.jobs.map((j) => (j.id === action.id ? { ...j, ...action.patch } : j)),
+        // 职位关闭时释放所有锁定在该职位上的简历
+        ...(action.patch.status === 'closed'
+          ? {
+              resumes: state.resumes.map((r) =>
+                r.jobId === action.id && (r.stage === 'matched' || r.stage === 'screening')
+                  ? {
+                      ...r,
+                      jobId: null, lockedBy: null, lockedAt: null,
+                      stage: 'screening' as Stage,
+                      updatedAt: now,
+                      activities: [...r.activities, activity(action.actorId, '职位已关闭，释放简历回筛选池')],
+                    }
+                  : r,
+              ),
+            }
+          : {}),
+      }
+    }
+    case 'deleteJob': {
+      return {
+        ...state,
+        jobs: state.jobs.filter((j) => j.id !== action.id),
+        resumes: state.resumes.map((r) => (r.jobId === action.id ? { ...r, jobId: null, lockedBy: null, lockedAt: null } : r)),
+      }
+    }
+    case 'matchJob': {
+      const job = state.jobs.find((j) => j.id === action.jobId)
+      if (!job || job.status !== 'open') return state
+      return {
+        ...state,
+        resumes: state.resumes.map((r) =>
+          r.id === action.resumeId
+            ? {
+                ...r,
+                stage: 'matched' as Stage,
+                jobId: action.jobId,
+                lockedBy: action.actorId,
+                lockedAt: now,
+                updatedAt: now,
+                activities: [...r.activities, activity(action.actorId, `匹配并锁定到「${jobLabel(job)}」`)],
+              }
+            : r,
+        ),
+      }
+    }
+    case 'releaseResumes': {
+      const idSet = new Set(action.ids)
+      return {
+        ...state,
+        resumes: state.resumes.map((r) =>
+          idSet.has(r.id)
+            ? {
+                ...r,
+                stage: action.toStage,
+                jobId: null,
+                lockedBy: null,
+                lockedAt: null,
+                updatedAt: now,
+                activities: [...r.activities, activity(action.actorId, `释放简历（${action.reason}），回到「${STAGE_LABELS[action.toStage]}」`)],
+              }
+            : r,
+        ),
+      }
     }
     case 'addUser': {
       return { ...state, users: [...state.users, { ...action.user, id: uid('u') }] }
@@ -190,7 +324,14 @@ function reducer(state: State, action: Action): State {
       const currentUserId = action.users.some((u) => u.id === state.currentUserId)
         ? state.currentUserId
         : (action.users[0]?.id ?? state.currentUserId)
-      return { ...state, users: action.users, resumes: action.resumes.map(normalizeResume), interviews: action.interviews, currentUserId }
+      return {
+        ...state,
+        users: action.users,
+        resumes: action.resumes.map(normalizeResume),
+        interviews: action.interviews,
+        jobs: action.jobs ?? [],
+        currentUserId,
+      }
     }
     case 'setRating': {
       return {
@@ -242,8 +383,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (pushingRef.current) return
       pushingRef.current = true
       setSyncStatus('syncing')
-      const { users, resumes, interviews } = stateRef.current
-      const shared: SharedState = { users, resumes, interviews }
+      const { users, resumes, interviews, jobs } = stateRef.current
+      const shared: SharedState = { users, resumes, interviews, jobs }
       const updatedAt = await pushRemote(shared, clientIdRef.current)
       pushingRef.current = false
       if (updatedAt !== null) {

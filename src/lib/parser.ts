@@ -1,6 +1,7 @@
-/** 本地智能解析引擎：从简历纯文本中抽取结构化字段（中文简历规则 + 技能词典） */
+/** 本地智能解析引擎：从简历纯文本中抽取结构化字段（教师招聘场景：中文简历规则 + 词典） */
 
 import { CERTIFICATE_DICT, deriveTags } from '@/lib/tags'
+import { TEACHER_SUBJECTS, type CertStage, type FullTime } from '@/types'
 
 export interface ParsedFields {
   name: string
@@ -14,59 +15,60 @@ export interface ParsedFields {
   company: string
   certificates: string[]
   tags: string[]
+  age: number
+  certStage: CertStage
+  certSubject: string
+  gradYear: number
+  hometown: string
+  fullTime: FullTime
+  major: string
   /** 各字段置信度：low 的字段会在 UI 中提示人工确认 */
   lowConfidence: string[]
 }
 
 const POSITION_KEYWORDS = [
-  '前端工程师', '前端开发', '后端工程师', '后端开发', '全栈工程师', 'Java工程师', 'Python工程师',
-  '算法工程师', '机器学习工程师', '深度学习工程师', '数据分析师', '数据工程师', '大数据工程师',
-  '测试工程师', '测试开发', 'QA工程师', '运维工程师', 'DevOps工程师', '安全工程师',
-  '产品经理', '产品总监', '项目经理', 'UI设计师', 'UX设计师', '交互设计师', '视觉设计师',
-  '运营专员', '运营经理', '市场专员', '市场经理', '销售代表', '销售经理', '客户经理',
-  '人事专员', 'HRBP', '财务专员', '会计', '法务专员', '行政专员', '客服专员',
-  'Android工程师', 'iOS工程师', '移动端工程师', '嵌入式工程师', '硬件工程师', '架构师',
+  '高中语文教师', '高中数学教师', '高中英语教师', '高中物理教师', '高中化学教师', '高中生物教师',
+  '高中历史教师', '高中地理教师', '高中政治教师',
+  '初中语文教师', '初中数学教师', '初中英语教师', '初中物理教师', '初中化学教师', '初中生物教师',
+  '初中历史教师', '初中地理教师', '初中政治教师', '初中道法教师',
+  '小学语文教师', '小学数学教师', '小学英语教师', '小学科学教师',
+  '语文教师', '数学教师', '英语教师', '物理教师', '化学教师', '生物教师',
+  '历史教师', '地理教师', '政治教师', '音乐教师', '体育教师', '美术教师',
+  '信息技术教师', '科学教师', '心理健康教师', '幼儿园教师', '幼师',
+  '班主任', '教研组长', '年级组长', '教务主任', '教学主管', '辅导员', '助教', '讲师',
 ]
 
 const SKILL_DICT = [
-  'JavaScript', 'TypeScript', 'React', 'Vue', 'Angular', 'Node.js', 'Next.js', 'Webpack', 'Vite',
-  'HTML', 'CSS', 'Sass', 'Less', 'Tailwind', '小程序', 'uni-app', 'Flutter', 'React Native',
-  'Java', 'Spring Boot', 'Spring Cloud', 'MyBatis', 'Kotlin', 'Scala', 'Go', 'Golang', 'Rust', 'C++', 'C#', '.NET', 'PHP', 'Laravel',
-  'Python', 'Django', 'Flask', 'FastAPI', 'Pandas', 'NumPy', 'PyTorch', 'TensorFlow', '机器学习', '深度学习', 'NLP', '计算机视觉',
-  'MySQL', 'PostgreSQL', 'Oracle', 'SQL Server', 'Redis', 'MongoDB', 'Elasticsearch', 'Kafka', 'RabbitMQ', 'ClickHouse',
-  'Linux', 'Docker', 'Kubernetes', 'K8s', 'CI/CD', 'Jenkins', 'Git', 'AWS', '阿里云', '腾讯云', '微服务', '分布式',
-  'SQL', 'Excel', 'Tableau', 'Power BI', 'SPSS', '数据仓库', '数据挖掘', 'AB测试',
-  'Figma', 'Sketch', 'Photoshop', 'Illustrator', 'Axure', '交互设计', '视觉设计', 'UI设计', '原型设计',
-  'Selenium', 'JMeter', 'Postman', '自动化测试', '性能测试', '接口测试',
-  '产品规划', '需求分析', '用户研究', '数据分析', '项目管理', '敏捷开发', 'Scrum', 'Jira',
-  'SEO', 'SEM', '内容运营', '用户运营', '活动策划', '新媒体运营', '私域运营',
+  '教学设计', '课程开发', '班级管理', '班主任工作', '教研活动', '试卷命题', '学情分析',
+  '分层教学', '因材施教', '家校沟通', '公开课', '说课', '试讲', '听课评课',
+  '新课标', '核心素养', '多媒体教学', '智慧课堂', '翻转课堂', '项目式学习',
+  '中高考备考', '竞赛辅导', '奥数辅导', '作文指导', '口语训练', '书法',
+  '心理辅导', '德育工作', '少先队工作', '社团指导', '校本课程',
+  'Excel', 'PPT', 'Word', '数据分析',
 ]
 
 const EDU_RANK: [string, number][] = [
   ['博士后', 6], ['博士', 5], ['PhD', 5], ['MBA', 4], ['硕士', 4], ['研究生', 4],
-  ['本科', 3], ['学士', 3], ['统招本科', 3], ['大专', 2], ['专科', 2], ['高中', 1], ['中专', 1],
+  ['本科', 3], ['学士', 3], ['统招本科', 3], ['大专', 2], ['专科', 2], ['高中', 1], ['中专', 1], ['中师', 1],
 ]
 
-const NAME_STOPWORDS = ['简历', '求职', '应聘', '个人', '电话', '手机', '邮箱', '地址', '男', '女', '岁', '学历', '经验', '本科', '硕士', '大专', '期望', '意向']
+const NAME_STOPWORDS = ['简历', '求职', '应聘', '个人', '电话', '手机', '邮箱', '地址', '男', '女', '岁', '学历', '经验', '本科', '硕士', '大专', '期望', '意向', '教师']
 
 function lines(text: string): string[] {
   return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
 }
 
 function extractName(ls: string[], fileName: string): { name: string; confident: boolean } {
-  // 1. 显式「姓名：」标注
   for (const l of ls.slice(0, 10)) {
     const m = l.match(/姓\s*名[:：\s]\s*([一-龥·]{2,5})/) ?? l.match(/Name[:：\s]\s*([A-Za-z][A-Za-z\s.]{1,30})/i)
     if (m) return { name: m[1].trim(), confident: true }
   }
-  // 2. 前 6 行中纯中文名
   for (const l of ls.slice(0, 6)) {
     const clean = l.replace(/\s+/g, '')
     if (/^[一-龥·]{2,4}$/.test(clean) && !NAME_STOPWORDS.some((w) => clean.includes(w))) {
       return { name: clean, confident: true }
     }
   }
-  // 3. 文件名推断（如「张三-前端工程师.pdf」）
   const stem = fileName.replace(/\.[^.]+$/, '')
   for (const token of stem.split(/[-_—–\s]+/)) {
     if (/^[一-龥·]{2,4}$/.test(token) && !NAME_STOPWORDS.some((w) => token.includes(w))) {
@@ -77,7 +79,7 @@ function extractName(ls: string[], fileName: string): { name: string; confident:
 }
 
 function extractPosition(text: string): { position: string; confident: boolean } {
-  const m = text.match(/(?:求职意向|意向岗位|意向职位|应聘职位|期望职位|目标职位|求职岗位)[:：\s]*([^\n，,；;|]{2,20})/)
+  const m = text.match(/(?:求职意向|意向岗位|意向职位|应聘职位|期望职位|目标职位|求职岗位|应聘岗位)[:：\s]*([^\n，,；;|]{2,20})/)
   if (m) return { position: m[1].trim(), confident: true }
   for (const kw of POSITION_KEYWORDS) {
     if (text.includes(kw)) return { position: kw, confident: false }
@@ -102,10 +104,8 @@ function extractEducation(text: string): string {
 }
 
 function extractExperience(text: string): number {
-  // 1. 显式「X年经验」（含「5年前端开发经验」等写法；前置非数字防止误匹配「2018年」）
-  const m = text.match(/(?<!\d)(\d{1,2})\s*年(?:以上)?[一-龥A-Za-z]{0,6}?经验/) ?? text.match(/(?<!\d)(\d{1,2})\s*\+?\s*years?/i)
+  const m = text.match(/(?<!\d)(\d{1,2})\s*年(?:以上)?[一-龥A-Za-z]{0,8}?(?:经验|教龄)/) ?? text.match(/(?<!\d)(\d{1,2})\s*\+?\s*years?/i)
   if (m) return Math.min(Number(m[1]), 40)
-  // 2. 工作时间段推断：取「20XX.XX - 至今/20XX」模式中的最早年份
   const years: number[] = []
   const rangeRe = /((?:19|20)\d{2})\s*[年./-]\s*\d{0,2}\s*[月]?\s*[-—–~至]\s*(?:至今|现在|now|((?:19|20)\d{2}))/gi
   let r: RegExpExecArray | null
@@ -119,18 +119,9 @@ function extractExperience(text: string): number {
 }
 
 function extractSkills(text: string): string[] {
-  const lower = text.toLowerCase()
   const found = new Set<string>()
   for (const skill of SKILL_DICT) {
-    const s = skill.toLowerCase()
-    if (lower.includes(s)) {
-      // 避免 Golang/Go、K8s/Kubernetes 重复
-      if (skill === 'Go' && found.has('Golang')) continue
-      if (skill === 'Golang' && found.has('Go')) continue
-      if (skill === 'K8s' && found.has('Kubernetes')) continue
-      if (skill === 'Kubernetes' && found.has('K8s')) continue
-      found.add(skill)
-    }
+    if (text.includes(skill)) found.add(skill)
   }
   return [...found].slice(0, 12)
 }
@@ -140,10 +131,12 @@ function extractCertificates(text: string): string[] {
   const found = new Set<string>()
   for (const cert of CERTIFICATE_DICT) {
     if (text.includes(cert)) {
-      // 归一化同义证书
       const normalized = cert === '英语四级' ? 'CET-4' : cert === '英语六级' ? 'CET-6' : cert
       if (found.has(normalized)) continue
       if ((cert === 'CET-4' && found.has('英语四级')) || (cert === 'CET-6' && found.has('英语六级'))) continue
+      // 「普通话一级甲等」命中时不再重复加入「普通话一级」
+      if (cert === '普通话一级' && found.has('普通话一级甲等')) continue
+      if (cert === '普通话二级' && found.has('普通话二级甲等')) continue
       found.add(normalized)
     }
   }
@@ -156,12 +149,105 @@ function extractUniversity(text: string): string {
   return m ? m[0] : ''
 }
 
-/** 最近任职公司：优先取「至今」所在段的公司名 */
+/** 最近任职单位：优先取「至今」所在段的学校/机构名 */
 function extractCompany(text: string): string {
-  const current = text.match(/至今[^\n]{0,30}?([一-龥A-Za-z（(]{2,20}(?:公司|集团|科技|网络|软件|信息|互联网|银行|证券|研究院))/)
+  const unitSuffix = '(?:学校|中学|小学|幼儿园|教育集团|培训机构|教育科技|有限公司|公司|集团|研究院)'
+  const current = text.match(new RegExp(`至今[^\\n]{0,30}?([一-龥A-Za-z（(]{2,20}${unitSuffix})`))
   if (current) return current[1]
-  const any = text.match(/([一-龥A-Za-z（(]{2,20}(?:公司|集团|科技|网络|软件|信息|互联网|银行|证券|研究院))/)
+  const any = text.match(new RegExp(`([一-龥A-Za-z（(]{2,20}${unitSuffix})`))
   return any ? any[1] : ''
+}
+
+/** 年龄：优先「XX岁」，其次出生年份推断 */
+function extractAge(text: string): number {
+  const m = text.match(/年龄[:：\s]*(\d{2})\s*岁?/) ?? text.match(/(?<!\d)(\d{2})\s*岁/)
+  if (m) {
+    const age = Number(m[1])
+    if (age >= 18 && age <= 65) return age
+  }
+  const birth = text.match(/(?:出生|生于)[:：\s]*((?:19|20)\d{2})\s*年/) ?? text.match(/((?:19|20)\d{2})\s*年\s*\d{0,2}\s*月?\s*(?:\d{0,2}\s*日?)?\s*出生/)
+  if (birth) {
+    const age = new Date().getFullYear() - Number(birth[1])
+    if (age >= 18 && age <= 65) return age
+  }
+  return 0
+}
+
+/** 教师资格证学段 + 科目 */
+function extractTeacherCert(text: string): { certStage: CertStage; certSubject: string } {
+  // 科目：优先「XX教师资格」或「教师资格（高中语文）」中的学科词
+  let certSubject = ''
+  let certStage: CertStage = ''
+  const certIdx = text.indexOf('教师资格')
+  const window = certIdx >= 0 ? text.slice(Math.max(0, certIdx - 30), certIdx + 30) : ''
+  if (certIdx >= 0) {
+    for (const s of TEACHER_SUBJECTS) {
+      if (window.includes(s)) {
+        certSubject = s
+        break
+      }
+    }
+    if (/幼儿园|幼儿/.test(window)) certStage = '幼儿园'
+    else if (/高级中学|高中/.test(window)) certStage = '高中'
+    else if (/初级中学|初中/.test(window)) certStage = '初中'
+    else if (/小学/.test(window)) certStage = '小学'
+  }
+  // 全文兜底：「高级中学语文教师资格」类写法
+  if (!certStage || !certSubject) {
+    const m = text.match(/(幼儿园|小学|初级|高级)?(中学)?([一-龥]{1,4})?教师资格/)
+    if (m) {
+      if (!certStage) {
+        const lv = m[1] ?? ''
+        if (lv === '幼儿园') certStage = '幼儿园'
+        else if (lv === '小学') certStage = '小学'
+        else if (lv === '初级') certStage = '初中'
+        else if (lv === '高级') certStage = '高中'
+      }
+      if (!certSubject && m[3] && TEACHER_SUBJECTS.includes(m[3])) certSubject = m[3]
+    }
+  }
+  return { certStage, certSubject }
+}
+
+/** 毕业年份：「XXXX年毕业」或教育经历时间段的最晚结束年 */
+function extractGradYear(text: string): number {
+  const m = text.match(/((?:19|20)\d{2})\s*年\s*(?:\d{1,2}\s*月?\s*)?毕业/) ?? text.match(/毕业\s*(?:时间|年份)?[:：\s]*((?:19|20)\d{2})/)
+  if (m) return Number(m[1])
+  // 教育时间段 2016.09-2020.06 XX大学 → 取结束年
+  const ranges = [...text.matchAll(/((?:19|20)\d{2})\s*[年./-]\s*\d{0,2}\s*[月]?\s*[-—–~至]\s*((?:19|20)\d{2})/g)]
+  const eduYears: number[] = []
+  for (const r of ranges) {
+    const tail = text.slice(r.index ?? 0, (r.index ?? 0) + 60)
+    if (/大学|学院|本科|硕士|博士|专业/.test(tail)) eduYears.push(Number(r[2]))
+  }
+  if (eduYears.length > 0) return Math.max(...eduYears)
+  return 0
+}
+
+/** 籍贯 */
+function extractHometown(text: string): string {
+  const m = text.match(/籍贯[:：\s]*([一-龥]{2,10})/) ?? text.match(/(?:户籍|户口)(?:所在地)?[:：\s]*([一-龥]{2,10})/)
+  return m ? m[1].trim() : ''
+}
+
+/** 是否全日制 */
+function extractFullTime(text: string): FullTime {
+  if (/非全日制|在职(?:读研|研究生|硕士)/.test(text)) return '非全日制'
+  if (/全日制/.test(text)) return '全日制'
+  return '未知'
+}
+
+/** 专业 */
+function extractMajor(text: string): string {
+  const m =
+    text.match(/专业[:：\s]*([一-龥（）()A-Za-z]{2,16})/) ??
+    text.match(/(?:大学|学院)\s*[，,。\s]*([一-龥（）()]{2,16})专业/) ??
+    text.match(/([一-龥（）()]{2,16})专业(?:\s*[，,。|]|$|\s*本科|\s*硕士)/m)
+  if (!m) return ''
+  const major = m[1].replace(/[，,。；;]$/, '').trim()
+  // 排除明显误判
+  if (/^(所学|本科|硕士|大学|毕业)$/.test(major)) return ''
+  return major
 }
 
 /** 解析简历文本，返回结构化字段与低置信度字段列表 */
@@ -177,7 +263,23 @@ export function parseResumeText(text: string, fileName: string): ParsedFields {
   const university = extractUniversity(text)
   const company = extractCompany(text)
   const certificates = extractCertificates(text)
-  const tags = deriveTags({ education: education || '未知', experience, certificates, university, company, rawText: text })
+  const age = extractAge(text)
+  const { certStage, certSubject } = extractTeacherCert(text)
+  const gradYear = extractGradYear(text)
+  const hometown = extractHometown(text)
+  const fullTime = extractFullTime(text)
+  const major = extractMajor(text)
+  const tags = deriveTags({
+    education: education || '未知',
+    experience,
+    certificates,
+    university,
+    company,
+    major,
+    certStage,
+    skills,
+    rawText: text,
+  })
 
   const lowConfidence: string[] = []
   if (!name || !nameOk) lowConfidence.push('name')
@@ -185,6 +287,7 @@ export function parseResumeText(text: string, fileName: string): ParsedFields {
   if (!phone) lowConfidence.push('phone')
   if (!email) lowConfidence.push('email')
   if (!education) lowConfidence.push('education')
+  if (!certStage) lowConfidence.push('certStage')
 
   return {
     name, phone, email,
@@ -196,6 +299,13 @@ export function parseResumeText(text: string, fileName: string): ParsedFields {
     company,
     certificates,
     tags,
+    age,
+    certStage,
+    certSubject,
+    gradYear,
+    hometown,
+    fullTime,
+    major,
     lowConfidence,
   }
 }

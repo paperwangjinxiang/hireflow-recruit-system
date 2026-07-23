@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router'
-import { LayoutDashboard, Users, FileUp, Contact, ChevronsUpDown, Sparkles } from 'lucide-react'
+import { LayoutDashboard, Users, FileUp, Contact, ChevronsUpDown, Sparkles, BriefcaseBusiness } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { ROLE_LABELS } from '@/types'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -16,6 +16,7 @@ import SyncIndicator from '@/components/SyncIndicator'
 
 const NAV = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, end: true },
+  { to: '/jobs', label: '职位发布', icon: BriefcaseBusiness },
   { to: '/resumes', label: '简历库', icon: Contact },
   { to: '/import', label: '批量导入', icon: FileUp },
   { to: '/ai-parse', label: 'AI 解析', icon: Sparkles },
@@ -28,11 +29,11 @@ export default function Layout() {
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
       <aside className="flex w-60 flex-col border-r bg-white">
-        <div className="flex items-center gap-2 px-5 py-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white font-bold">聘</div>
+          <div className="flex items-center gap-2 px-5 py-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-white font-bold">师</div>
           <div>
             <div className="font-semibold leading-tight">HireFlow</div>
-            <div className="text-xs text-slate-500">招聘管理系统</div>
+            <div className="text-xs text-slate-500">教师招聘管理系统</div>
           </div>
         </div>
         <nav className="flex-1 space-y-1 px-3 py-2">

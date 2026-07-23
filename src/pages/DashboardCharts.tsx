@@ -47,7 +47,7 @@ export default function DashboardCharts() {
         const assigned = resumes.filter((r) => r.assigneeId === u.id)
         return {
           name: u.name,
-          active: assigned.filter((r) => r.stage !== 'hired' && r.stage !== 'rejected').length,
+          active: assigned.filter((r) => r.stage !== 'onboarded' && r.stage !== 'rejected' && r.stage !== 'offboarded' && r.stage !== 'blacklisted').length,
           total: assigned.length,
         }
       })

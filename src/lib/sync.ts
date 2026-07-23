@@ -1,4 +1,4 @@
-import type { Interview, Resume, User } from '@/types'
+import type { Interview, Job, Resume, User } from '@/types'
 
 /**
  * 云端数据同步：默认使用免注册的公共 JSON 存储（JSONBlob），
@@ -10,6 +10,7 @@ export interface SharedState {
   users: User[]
   resumes: Resume[]
   interviews: Interview[]
+  jobs: Job[]
 }
 
 export interface RemotePayload {
