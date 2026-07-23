@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { Activity, Interview, Resume, Stage, User } from '@/types'
 import { STAGE_LABELS, RESULT_LABELS } from '@/types'
 import { SEED_USERS, seedResumes, seedInterviews } from '@/lib/seed'
+import { getClientId, getSyncUrl, pullRemote, pushRemote, setSyncUrl, type SharedState } from '@/lib/sync'
 
 interface State {
   users: User[]
@@ -21,7 +22,10 @@ type Action =
   | { type: 'addInterview'; interview: Omit<Interview, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location'>>; actorId: string }
   | { type: 'deleteInterview'; id: string }
+  | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[] }
   | { type: 'resetData' }
+
+export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 
 export type ImportableResume = Omit<Resume, 'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities'> & {
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
@@ -171,6 +175,12 @@ function reducer(state: State, action: Action): State {
     case 'resetData': {
       return seedState(state.currentUserId)
     }
+    case 'applyRemote': {
+      const currentUserId = action.users.some((u) => u.id === state.currentUserId)
+        ? state.currentUserId
+        : (action.users[0]?.id ?? state.currentUserId)
+      return { ...state, users: action.users, resumes: action.resumes, interviews: action.interviews, currentUserId }
+    }
     default:
       return state
   }
@@ -179,21 +189,123 @@ function reducer(state: State, action: Action): State {
 interface StoreValue extends State {
   currentUser: User
   dispatch: React.Dispatch<Action>
+  syncStatus: SyncStatus
+  lastSyncAt: number | null
+  syncNow: () => Promise<void>
+  syncUrl: string
+  setCustomSyncUrl: (url: string) => void
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, init)
+  const [state, baseDispatch] = useReducer(reducer, undefined, init)
 
+  // ---- 云端同步 ----
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
+  const [syncUrl, setSyncUrlState] = useState(getSyncUrl)
+  const clientIdRef = useRef(getClientId())
+  const dirtyRef = useRef(false)
+  const lastRemoteRef = useRef(0)
+  const pushingRef = useRef(false)
+  const stateRef = useRef(state)
+  stateRef.current = state
+
+  const dispatch = useMemo<React.Dispatch<Action>>(
+    () => (action) => {
+      if (action.type !== 'applyRemote') dirtyRef.current = true
+      baseDispatch(action)
+    },
+    [],
+  )
+
+  const doPush = useMemo(
+    () => async () => {
+      if (pushingRef.current) return
+      pushingRef.current = true
+      setSyncStatus('syncing')
+      const { users, resumes, interviews } = stateRef.current
+      const shared: SharedState = { users, resumes, interviews }
+      const updatedAt = await pushRemote(shared, clientIdRef.current)
+      pushingRef.current = false
+      if (updatedAt !== null) {
+        lastRemoteRef.current = updatedAt
+        dirtyRef.current = false
+        setSyncStatus('ok')
+        setLastSyncAt(Date.now())
+      } else {
+        setSyncStatus('error')
+      }
+    },
+    [],
+  )
+
+  const doPull = useMemo(
+    () => async () => {
+      const payload = await pullRemote()
+      if (payload === undefined) {
+        setSyncStatus('error')
+        return
+      }
+      if (payload.state === null) {
+        // 云端是空库：把本地数据推上去
+        dirtyRef.current = true
+        await doPush()
+        return
+      }
+      if (payload.updatedAt > lastRemoteRef.current) {
+        lastRemoteRef.current = payload.updatedAt
+        if (payload.origin !== clientIdRef.current && payload.state) {
+          dirtyRef.current = false // 应用云端数据，避免回推造成回环
+          baseDispatch({ type: 'applyRemote', ...payload.state })
+        }
+        setLastSyncAt(Date.now())
+      }
+      setSyncStatus((s) => (s === 'syncing' ? s : 'ok'))
+    },
+    [doPush],
+  )
+
+  // 本地变更后 1 秒防抖推送
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  }, [state])
+    if (!dirtyRef.current) return
+    const t = setTimeout(() => {
+      if (dirtyRef.current) doPush()
+    }, 1000)
+    return () => clearTimeout(t)
+  }, [state, doPush])
+
+  // 启动时拉取一次，之后每 15 秒轮询云端
+  useEffect(() => {
+    doPull()
+    const timer = setInterval(doPull, 15000)
+    return () => clearInterval(timer)
+  }, [doPull])
+
+  const syncNow = useMemo(
+    () => async () => {
+      if (dirtyRef.current) await doPush()
+      await doPull()
+    },
+    [doPush, doPull],
+  )
+
+  const setCustomSyncUrl = useMemo(
+    () => (url: string) => {
+      setSyncUrl(url)
+      setSyncUrlState(getSyncUrl())
+      lastRemoteRef.current = 0
+      doPull()
+    },
+    [doPull],
+  )
 
   const value = useMemo<StoreValue>(() => {
     const currentUser = state.users.find((u) => u.id === state.currentUserId) ?? state.users[0]
-    return { ...state, currentUser, dispatch }
-  }, [state])
+    return { ...state, currentUser, dispatch, syncStatus, lastSyncAt, syncNow, syncUrl, setCustomSyncUrl }
+  }, [state, dispatch, syncStatus, lastSyncAt, syncNow, syncUrl, setCustomSyncUrl])
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }
