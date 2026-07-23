@@ -448,7 +448,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // 本地变更后 1 秒防抖推送
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    } catch {
+      // 存储配额满等异常不阻断使用（云端同步仍可进行）
+    }
     if (!dirtyRef.current) return
     const t = setTimeout(() => {
       if (dirtyRef.current) doPush()

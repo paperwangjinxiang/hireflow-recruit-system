@@ -7,6 +7,7 @@ import {
 import { useStore } from '@/lib/store'
 import { SCHOOL_LEVELS, TEACHER_SUBJECTS, STAGE_LABELS, STAGE_COLORS, type Job, type Resume, type SchoolLevel } from '@/types'
 import { tagColor } from '@/lib/tags'
+import { computeMatchScore, scoreColor, scoreLabel } from '@/lib/match'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -301,7 +302,8 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
       .filter((r) => !onlySameLevel || r.certStage === job.level)
       .filter((r) => !onlySameLevel || !r.certSubject || r.certSubject === job.subject || job.subject === '')
       .filter((r) => !keyword || r.name.includes(keyword) || r.university.includes(keyword) || r.major.includes(keyword))
-      .sort((a, b) => b.rating - a.rating || b.experience - a.experience)
+      .map((r) => ({ resume: r, match: computeMatchScore(r, job) }))
+      .sort((a, b) => b.match.score - a.match.score || b.resume.rating - a.resume.rating)
   }, [resumes, kw, onlySameLevel, job])
 
   return (
@@ -321,7 +323,7 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
           </label>
         </div>
         <ul className="max-h-80 space-y-2 overflow-y-auto">
-          {candidates.map((r) => (
+          {candidates.map(({ resume: r, match }) => (
             <li key={r.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -329,6 +331,9 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
                   {r.age > 0 && <span className="text-xs text-slate-400">{r.age}岁</span>}
                   <Badge variant="outline" className="text-[10px]">{r.certStage || '无'}{r.certSubject}教资</Badge>
                   {r.rating > 0 && <span className="text-xs text-amber-500">{'★'.repeat(r.rating)}</span>}
+                  <Badge variant="outline" className={`text-[10px] ${scoreColor(match.score)}`} title={match.reasons.join('；')}>
+                    匹配 {match.score} 分 · {scoreLabel(match.score)}
+                  </Badge>
                 </div>
                 <p className="mt-0.5 truncate text-xs text-slate-500">
                   {r.university} · {r.major}（{r.fullTime}）· {r.gradYear > 0 ? `${r.gradYear}届` : '届别未知'} · {r.experience}年经验 · {r.hometown || '籍贯未知'}

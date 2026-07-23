@@ -54,7 +54,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 async function fetchWithRetry(input: string, init: RequestInit, retries = 2): Promise<Response | null> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const resp = await fetch(input, init)
+      const resp = await fetch(input, { ...init, signal: AbortSignal.timeout(15000) })
       if (resp.status === 429 && attempt < retries) {
         await sleep(attempt === 0 ? 3000 : 8000)
         continue

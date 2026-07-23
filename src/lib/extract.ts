@@ -117,7 +117,14 @@ async function ocrPdf(doc: pdfjs.PDFDocumentProxy, onProgress?: (msg: string) =>
 }
 
 async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => void): Promise<string> {
-  const doc = await pdfjs.getDocument({ data: buffer }).promise
+  let doc: pdfjs.PDFDocumentProxy
+  try {
+    doc = await pdfjs.getDocument({ data: buffer }).promise
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ''
+    if (/password/i.test(msg)) throw new Error('PDF 已加密，请先解除密码保护后重新上传')
+    throw new Error('PDF 文件损坏或格式异常，无法读取')
+  }
   const text = await extractPdfTextLayer(doc)
   // 文字层内容过少 → 判定为扫描件/图片型 PDF，走 OCR
   if (text.replace(/\s/g, '').length >= 30) return text

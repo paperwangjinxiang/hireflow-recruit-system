@@ -103,6 +103,8 @@ export function normalizeResume(r: Resume): Resume {
     jobId: r.jobId ?? null,
     lockedBy: r.lockedBy ?? null,
     lockedAt: r.lockedAt ?? null,
+    notes: r.notes ?? [],
+    activities: r.activities ?? [],
     stage: normalizeStage(r.stage as string),
   }
 }

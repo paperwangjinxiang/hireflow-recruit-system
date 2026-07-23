@@ -18,6 +18,7 @@ import {
   Award, MapPin, CalendarDays, BookOpen, Lock, Unlock, BedDouble,
 } from 'lucide-react'
 import { tagColor } from '@/lib/tags'
+import { computeMatchScore, scoreColor, scoreLabel } from '@/lib/match'
 import InterviewSection from './InterviewSection'
 import { toast } from 'sonner'
 
@@ -194,6 +195,17 @@ export default function ResumeDetail({
                   >
                     <Lock className="mr-1.5 h-3.5 w-3.5" />匹配并锁定
                   </Button>
+                  {matchJobId && (() => {
+                    const job = jobs.find((j) => j.id === matchJobId)
+                    if (!job) return null
+                    const m = computeMatchScore(resume, job)
+                    return (
+                      <div className="flex items-center gap-2 text-xs">
+                        <Badge variant="outline" className={scoreColor(m.score)}>{m.score} 分 · {scoreLabel(m.score)}</Badge>
+                        <span className="text-slate-400">{m.reasons.join('；')}</span>
+                      </div>
+                    )
+                  })()}
                   {jobs.filter((j) => j.status === 'open').length === 0 && (
                     <p className="text-xs text-slate-400">暂无开放中的职位，请先到「职位发布」创建。</p>
                   )}
@@ -235,7 +247,7 @@ export default function ResumeDetail({
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {STAGE_ORDER.filter((s) => s !== 'matched').map((s) => (
+                    {STAGE_ORDER.filter((s) => s !== 'matched' || s === resume.stage).map((s) => (
                       <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>
                     ))}
                   </SelectContent>

@@ -64,6 +64,7 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
       temperature: 0,
       response_format: { type: 'json_object' },
     }),
+    signal: AbortSignal.timeout(45000),
   })
   if (!resp.ok) throw new Error(`AI 接口返回 ${resp.status}`)
   const data = await resp.json()
@@ -123,6 +124,7 @@ export async function ocrWithVision(images: string[], config: LlmConfig): Promis
         ],
         temperature: 0,
       }),
+      signal: AbortSignal.timeout(90000),
     })
     if (!resp.ok) throw new Error(`视觉模型接口返回 ${resp.status}`)
     const data = await resp.json()
