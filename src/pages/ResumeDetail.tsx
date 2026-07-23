@@ -1,0 +1,177 @@
+import { useState } from 'react'
+import { format } from 'date-fns'
+import { useStore } from '@/lib/store'
+import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { Separator } from '@/components/ui/separator'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Mail, Phone, Briefcase, GraduationCap, Clock, Tag } from 'lucide-react'
+import InterviewSection from './InterviewSection'
+import { toast } from 'sonner'
+
+export default function ResumeDetail({
+  resume,
+  open,
+  onOpenChange,
+}: {
+  resume: Resume | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const { users, currentUser, dispatch } = useStore()
+  const [note, setNote] = useState('')
+
+  if (!resume) return null
+  const assignee = users.find((u) => u.id === resume.assigneeId)
+  const userName = (id: string) => users.find((u) => u.id === id)?.name ?? '系统'
+  const userColor = (id: string) => users.find((u) => u.id === id)?.color ?? '#94a3b8'
+
+  const timeline = [
+    ...resume.activities.map((a) => ({ kind: 'activity' as const, ...a })),
+    ...resume.notes.map((n) => ({ kind: 'note' as const, ...n })),
+  ].sort((a, b) => b.createdAt - a.createdAt)
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full sm:max-w-xl">
+        <SheetHeader>
+          <SheetTitle className="flex items-center gap-3">
+            <span className="text-xl">{resume.name}</span>
+            <Badge variant="outline" className={STAGE_COLORS[resume.stage]}>{STAGE_LABELS[resume.stage]}</Badge>
+          </SheetTitle>
+        </SheetHeader>
+        <ScrollArea className="h-[calc(100vh-6rem)] pr-4">
+          <div className="mt-4 space-y-6">
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-slate-400" />{resume.phone || '—'}</div>
+              <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-slate-400" />{resume.email || '—'}</div>
+              <div className="flex items-center gap-2 text-slate-600"><Briefcase className="h-4 w-4 text-slate-400" />{resume.position} · {resume.experience} 年经验</div>
+              <div className="flex items-center gap-2 text-slate-600"><GraduationCap className="h-4 w-4 text-slate-400" />{resume.education}</div>
+              <div className="flex items-center gap-2 text-slate-600"><Tag className="h-4 w-4 text-slate-400" />来源：{resume.source}</div>
+              <div className="flex items-center gap-2 text-slate-600"><Clock className="h-4 w-4 text-slate-400" />{format(resume.createdAt, 'yyyy-MM-dd HH:mm')}</div>
+            </div>
+
+            {resume.skills.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {resume.skills.map((s) => (
+                  <Badge key={s} variant="secondary">{s}</Badge>
+                ))}
+              </div>
+            )}
+
+            <Separator />
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-500">负责人</label>
+                <Select
+                  value={resume.assigneeId ?? 'none'}
+                  onValueChange={(v) => {
+                    dispatch({ type: 'assign', ids: [resume.id], assigneeId: v === 'none' ? null : v, actorId: currentUser.id })
+                    toast.success(v === 'none' ? '已取消分配' : '分配成功')
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">未分配</SelectItem>
+                    {users.map((u) => (
+                      <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-slate-500">招聘阶段</label>
+                <Select
+                  value={resume.stage}
+                  onValueChange={(v) => {
+                    dispatch({ type: 'updateStage', ids: [resume.id], stage: v as Stage, actorId: currentUser.id })
+                    toast.success('阶段已更新')
+                  }}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {STAGE_ORDER.map((s) => (
+                      <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {assignee && (
+              <div className="flex items-center gap-2 rounded-lg bg-slate-50 p-3 text-sm">
+                <Avatar className="h-7 w-7">
+                  <AvatarFallback style={{ backgroundColor: assignee.color, color: '#fff' }}>{assignee.name.slice(0, 1)}</AvatarFallback>
+                </Avatar>
+                当前由 <span className="font-medium">{assignee.name}</span> 跟进
+              </div>
+            )}
+
+            <Separator />
+
+            <InterviewSection resume={resume} />
+
+            <Separator />
+
+            <div className="space-y-3">
+              <h3 className="font-semibold">添加备注</h3>
+              <Textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="记录面试反馈、沟通要点……"
+                rows={3}
+              />
+              <Button
+                size="sm"
+                disabled={!note.trim()}
+                onClick={() => {
+                  dispatch({ type: 'addNote', resumeId: resume.id, authorId: currentUser.id, content: note.trim() })
+                  setNote('')
+                  toast.success('备注已添加')
+                }}
+              >
+                保存备注
+              </Button>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h3 className="font-semibold">动态与备注</h3>
+              <ul className="space-y-4">
+                {timeline.map((item) => {
+                  const personId = item.kind === 'note' ? item.authorId : item.actorId
+                  return (
+                  <li key={item.id} className="flex gap-3">
+                    <Avatar className="h-8 w-8 shrink-0">
+                      <AvatarFallback style={{ backgroundColor: userColor(personId), color: '#fff' }}>
+                        {userName(personId).slice(0, 1)}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2 text-sm">
+                        <span className="font-medium">{userName(personId)}</span>
+                        <span className="shrink-0 text-xs text-slate-400">{format(item.createdAt, 'MM-dd HH:mm')}</span>
+                      </div>
+                      {item.kind === 'note' ? (
+                        <p className="mt-1 rounded-lg bg-amber-50 p-2.5 text-sm text-slate-700">{item.content}</p>
+                      ) : (
+                        <p className="mt-0.5 text-sm text-slate-500">{item.action}</p>
+                      )}
+                    </div>
+                  </li>
+                  )
+                })}
+              </ul>
+            </div>
+          </div>
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
+  )
+}
