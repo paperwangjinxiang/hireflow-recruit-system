@@ -1,8 +1,10 @@
 import * as pdfjs from 'pdfjs-dist'
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import workerRaw from 'pdfjs-dist/build/pdf.worker.min.mjs?raw'
 import mammoth from 'mammoth'
 
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+// 单文件部署时 data: URL 无法创建 Worker，改用 Blob URL（所有浏览器均允许）
+const workerBlob = new Blob([workerRaw], { type: 'text/javascript' })
+pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob)
 
 export type ResumeFileKind = 'pdf' | 'docx' | 'text'
 
