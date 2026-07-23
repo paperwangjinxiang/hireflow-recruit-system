@@ -277,10 +277,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t)
   }, [state, doPush])
 
-  // 启动时拉取一次，之后每 15 秒轮询云端
+  // 启动时拉取一次，之后每 30 秒轮询云端（避免触发存储端限流）
   useEffect(() => {
     doPull()
-    const timer = setInterval(doPull, 15000)
+    const timer = setInterval(doPull, 30000)
     return () => clearInterval(timer)
   }, [doPull])
 

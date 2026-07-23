@@ -1,10 +1,9 @@
 import * as pdfjs from 'pdfjs-dist'
-import workerRaw from 'pdfjs-dist/build/pdf.worker.min.mjs?raw'
 import mammoth from 'mammoth'
 
-// 单文件部署时 data: URL 无法创建 Worker，改用 Blob URL（所有浏览器均允许）
-const workerBlob = new Blob([workerRaw], { type: 'text/javascript' })
-pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob)
+// Worker 作为同源静态文件随应用一起部署（public/pdf.worker.min.js）。
+// Chrome 禁止从 data:/blob: URL 创建 ES module Worker，因此必须走同源文件。
+pdfjs.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js'
 
 export type ResumeFileKind = 'pdf' | 'docx' | 'text'
 
@@ -22,10 +21,19 @@ async function extractPdf(buffer: ArrayBuffer): Promise<string> {
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
     const content = await page.getTextContent()
-    const text = content.items
-      .map((item) => ('str' in item ? item.str : ''))
-      .join(' ')
-    parts.push(text)
+    // 按行重组：利用 hasEOL 与纵坐标变化还原简历的行结构
+    let pageText = ''
+    let lastY: number | null = null
+    for (const item of content.items) {
+      if (!('str' in item)) continue
+      const y = item.transform[5]
+      if (lastY !== null && Math.abs(y - lastY) > 2) pageText += '\n'
+      else if (lastY !== null && pageText.length > 0) pageText += ' '
+      pageText += item.str
+      if (item.hasEOL) pageText += '\n'
+      lastY = item.transform[5]
+    }
+    parts.push(pageText)
   }
   return parts.join('\n')
 }
