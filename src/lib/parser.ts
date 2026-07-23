@@ -250,8 +250,16 @@ function extractMajor(text: string): string {
   return major
 }
 
+/** 规范化文本：消除 OCR 输出中中文字符之间的多余空格/制表符，避免切断「姓名：张三」「籍贯：湖北黄冈」等模式 */
+function normalizeText(text: string): string {
+  return text
+    .replace(/([一-龥（）《》·])[ \t]+(?=[一-龥（）《》·])/g, '$1')
+    .replace(/[ \t]+\n/g, '\n')
+}
+
 /** 解析简历文本，返回结构化字段与低置信度字段列表 */
-export function parseResumeText(text: string, fileName: string): ParsedFields {
+export function parseResumeText(rawText: string, fileName: string): ParsedFields {
+  const text = normalizeText(rawText)
   const ls = lines(text)
   const email = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/)?.[0] ?? ''
   const phone = text.match(/(?<!\d)1[3-9]\d{9}(?!\d)/)?.[0] ?? ''

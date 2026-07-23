@@ -7,18 +7,23 @@ export interface LlmConfig {
   baseUrl: string // 如 https://api.moonshot.cn/v1
   apiKey: string
   model: string // 如 moonshot-v1-8k / gpt-4o-mini
+  /** 扫描件 OCR 使用多模态视觉模型（未启用则回退本地 Tesseract） */
+  visionEnabled: boolean
+  visionModel: string // 如 moonshot-v1-8k-vision-preview / gpt-4o
 }
 
 const CONFIG_KEY = 'hireflow-llm-config'
 
+const DEFAULT_CONFIG: LlmConfig = { enabled: false, baseUrl: '', apiKey: '', model: '', visionEnabled: false, visionModel: '' }
+
 export function getLlmConfig(): LlmConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY)
-    if (raw) return { enabled: false, baseUrl: '', apiKey: '', model: '', ...JSON.parse(raw) }
+    if (raw) return { ...DEFAULT_CONFIG, ...JSON.parse(raw) }
   } catch {
     // ignore
   }
-  return { enabled: false, baseUrl: '', apiKey: '', model: '' }
+  return { ...DEFAULT_CONFIG }
 }
 
 export function saveLlmConfig(config: LlmConfig) {
@@ -87,8 +92,48 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
   }
 }
 
-/** 合并：LLM 结果优先，空字段回退到本地引擎结果 */
-export function mergeParsed(local: ParsedFields, llm: Partial<ParsedFields>): ParsedFields {
+/** 视觉 OCR 是否可用（配置了接口、密钥与视觉模型） */
+export function isVisionReady(config: LlmConfig): boolean {
+  return !!(config.visionEnabled && config.baseUrl && config.apiKey && config.visionModel)
+}
+
+const VISION_PROMPT = `这是一份简历扫描件的页面图片。请完整、逐行提取页面中的所有文字内容，保持原有的换行结构，不要遗漏任何信息（包括姓名、联系方式、教育经历、工作经历、证书等）。只输出提取的纯文字，不要输出任何解释、总结或 Markdown 格式。`
+
+/** 用多模态视觉模型识别扫描件页面图片（base64 dataURL 数组），返回全文文本 */
+export async function ocrWithVision(images: string[], config: LlmConfig): Promise<string> {
+  const base = config.baseUrl.replace(/\/+$/, '')
+  const texts: string[] = []
+  for (const dataUrl of images) {
+    const resp = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: config.visionModel,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: VISION_PROMPT },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+        temperature: 0,
+      }),
+    })
+    if (!resp.ok) throw new Error(`视觉模型接口返回 ${resp.status}`)
+    const data = await resp.json()
+    const content: string = data.choices?.[0]?.message?.content ?? ''
+    if (!content.trim()) throw new Error('视觉模型未返回文字内容')
+    texts.push(content.trim())
+  }
+  return texts.join('\n')
+}
+
+/** 合并：LLM 结果优先，空字段回退到本地引擎结果 */export function mergeParsed(local: ParsedFields, llm: Partial<ParsedFields>): ParsedFields {
   const merged: ParsedFields = {
     ...local,
     name: llm.name || local.name,

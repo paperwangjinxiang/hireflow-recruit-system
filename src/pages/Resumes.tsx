@@ -155,7 +155,7 @@ export default function Resumes() {
           <Select onValueChange={(v) => batchStage(v as Stage)}>
             <SelectTrigger className="h-8 w-40 bg-white"><SelectValue placeholder="移动到阶段…" /></SelectTrigger>
             <SelectContent>
-              {STAGE_ORDER.map((s) => <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>)}
+              {STAGE_ORDER.filter((s) => s !== 'matched').map((s) => <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>)}
             </SelectContent>
           </Select>
           <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>

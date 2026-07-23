@@ -57,6 +57,27 @@ export type ImportableResume = Omit<
 
 const STORAGE_KEY = 'hireflow-state-v2'
 
+/** 按手机号/邮箱过滤与库中已有简历重复的导入项（同时去除导入批次内部重复） */
+export function filterDuplicateResumes<T extends { phone?: string; email?: string }>(
+  items: T[],
+  existing: Resume[],
+): { unique: T[]; skipped: number } {
+  const keys = new Set(existing.map((r) => r.phone || r.email).filter(Boolean))
+  const seen = new Set<string>()
+  const unique: T[] = []
+  let skipped = 0
+  for (const it of items) {
+    const key = (it.phone || it.email || '').trim()
+    if (key && (keys.has(key) || seen.has(key))) {
+      skipped++
+      continue
+    }
+    if (key) seen.add(key)
+    unique.push(it)
+  }
+  return { unique, skipped }
+}
+
 function uid(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -435,11 +456,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(t)
   }, [state, doPush])
 
-  // 启动时拉取一次，之后每 30 秒轮询云端（避免触发存储端限流）
+  // 启动时拉取一次，之后每 30 秒轮询云端（页面隐藏时暂停，回到前台立即拉取，避免触发存储端限流）
   useEffect(() => {
     doPull()
-    const timer = setInterval(doPull, 30000)
-    return () => clearInterval(timer)
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') doPull()
+    }, 30000)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') doPull()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [doPull])
 
   const syncNow = useMemo(

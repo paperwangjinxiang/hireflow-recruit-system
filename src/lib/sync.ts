@@ -48,14 +48,37 @@ export function getClientId(): string {
   return id
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** 带退避重试的 fetch：遇到 429 限流时按 3s / 8s 退避重试，其余错误直接放弃 */
+async function fetchWithRetry(input: string, init: RequestInit, retries = 2): Promise<Response | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(input, init)
+      if (resp.status === 429 && attempt < retries) {
+        await sleep(attempt === 0 ? 3000 : 8000)
+        continue
+      }
+      return resp
+    } catch {
+      if (attempt < retries) {
+        await sleep(2000)
+        continue
+      }
+      return null
+    }
+  }
+  return null
+}
+
 /** 拉取云端数据；网络失败返回 undefined，成功返回 payload（可能为空库） */
 export async function pullRemote(): Promise<RemotePayload | undefined> {
+  const resp = await fetchWithRetry(getSyncUrl(), {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  }, 1)
+  if (!resp || !resp.ok) return undefined
   try {
-    const resp = await fetch(getSyncUrl(), {
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    })
-    if (!resp.ok) return undefined
     const data = await resp.json()
     if (typeof data?.updatedAt !== 'number') return { version: 1, updatedAt: 0, origin: '', state: null }
     return data as RemotePayload
@@ -67,14 +90,10 @@ export async function pullRemote(): Promise<RemotePayload | undefined> {
 /** 推送本地数据到云端；成功返回 updatedAt，失败返回 null */
 export async function pushRemote(state: SharedState, origin: string): Promise<number | null> {
   const payload: RemotePayload = { version: 1, updatedAt: Date.now(), origin, state }
-  try {
-    const resp = await fetch(getSyncUrl(), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(payload),
-    })
-    return resp.ok ? payload.updatedAt : null
-  } catch {
-    return null
-  }
+  const resp = await fetchWithRetry(getSyncUrl(), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return resp && resp.ok ? payload.updatedAt : null
 }

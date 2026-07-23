@@ -5,7 +5,7 @@ import {
   AlertTriangle, Loader2, BrainCircuit, ClipboardPaste,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { useStore } from '@/lib/store'
+import { useStore, filterDuplicateResumes } from '@/lib/store'
 import { detectKind, extractText } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
@@ -39,7 +39,7 @@ function uid() {
 }
 
 export default function AiParse() {
-  const { currentUser, dispatch } = useStore()
+  const { resumes, currentUser, dispatch } = useStore()
   const navigate = useNavigate()
   const fileRef = useRef<HTMLInputElement>(null)
   const [items, setItems] = useState<FileItem[]>([])
@@ -125,35 +125,37 @@ export default function AiParse() {
       toast.error('没有可导入的简历（姓名不能为空）')
       return
     }
-    dispatch({
-      type: 'importResumes',
-      actorId: currentUser.id,
-      resumes: importable.map((i) => ({
-        name: i.fields.name.trim(),
-        phone: i.fields.phone,
-        email: i.fields.email,
-        position: i.fields.position,
-        education: i.fields.education,
-        experience: i.fields.experience,
-        skills: i.fields.skills,
-        university: i.fields.university,
-        company: i.fields.company,
-        certificates: i.fields.certificates,
-        tags: i.fields.tags,
-        age: i.fields.age,
-        certStage: i.fields.certStage,
-        certSubject: i.fields.certSubject,
-        gradYear: i.fields.gradYear,
-        hometown: i.fields.hometown,
-        fullTime: i.fields.fullTime,
-        major: i.fields.major,
-        source: i.method === 'ai' ? 'AI 解析' : '智能解析',
-        stage: 'imported' as const,
-        assigneeId: null,
-        initialNote: `【${i.fileName} 解析导入】原文摘要：\n${i.rawText.slice(0, 400)}${i.rawText.length > 400 ? '……' : ''}`,
-      })),
-    })
-    toast.success(`成功导入 ${importable.length} 份简历`)
+    const candidates = importable.map((i) => ({
+      name: i.fields.name.trim(),
+      phone: i.fields.phone,
+      email: i.fields.email,
+      position: i.fields.position,
+      education: i.fields.education,
+      experience: i.fields.experience,
+      skills: i.fields.skills,
+      university: i.fields.university,
+      company: i.fields.company,
+      certificates: i.fields.certificates,
+      tags: i.fields.tags,
+      age: i.fields.age,
+      certStage: i.fields.certStage,
+      certSubject: i.fields.certSubject,
+      gradYear: i.fields.gradYear,
+      hometown: i.fields.hometown,
+      fullTime: i.fields.fullTime,
+      major: i.fields.major,
+      source: i.method === 'ai' ? 'AI 解析' : '智能解析',
+      stage: 'imported' as const,
+      assigneeId: null,
+      initialNote: `【${i.fileName} 解析导入】原文摘要：\n${i.rawText.slice(0, 400)}${i.rawText.length > 400 ? '……' : ''}`,
+    }))
+    const { unique, skipped } = filterDuplicateResumes(candidates, resumes)
+    if (unique.length === 0) {
+      toast.error('全部为重复简历（手机号/邮箱已存在），未导入')
+      return
+    }
+    dispatch({ type: 'importResumes', actorId: currentUser.id, resumes: unique })
+    toast.success(`成功导入 ${unique.length} 份简历${skipped > 0 ? `，跳过 ${skipped} 份重复` : ''}`)
     navigate('/resumes')
   }
 
@@ -225,6 +227,27 @@ export default function AiParse() {
                     placeholder="moonshot-v1-8k"
                   />
                 </div>
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <Label htmlFor="vision-enabled" className="cursor-pointer">扫描件使用 AI 视觉识别</Label>
+                    <p className="mt-0.5 text-xs text-slate-400">识别精度显著高于本地 OCR，适合模糊/复杂版式扫描件</p>
+                  </div>
+                  <Switch
+                    id="vision-enabled"
+                    checked={draftConfig.visionEnabled}
+                    onCheckedChange={(v) => setDraftConfig({ ...draftConfig, visionEnabled: v })}
+                  />
+                </div>
+                {draftConfig.visionEnabled && (
+                  <div className="space-y-1.5">
+                    <Label>视觉模型</Label>
+                    <Input
+                      value={draftConfig.visionModel}
+                      onChange={(e) => setDraftConfig({ ...draftConfig, visionModel: e.target.value })}
+                      placeholder="moonshot-v1-8k-vision-preview / gpt-4o"
+                    />
+                  </div>
+                )}
                 <Button className="w-full" onClick={saveSettings}>保存设置</Button>
               </div>
             </DialogContent>

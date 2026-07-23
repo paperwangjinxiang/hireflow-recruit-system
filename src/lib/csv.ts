@@ -93,7 +93,7 @@ export function parseResumesFromCSV(text: string): ParsedResume[] {
     const certStageRaw = get('certStage')
     const certStage = (['幼儿园', '小学', '初中', '高中'].includes(certStageRaw) ? certStageRaw : '') as '' | '幼儿园' | '小学' | '初中' | '高中'
     const fullTimeRaw = get('fullTime')
-    const fullTime = fullTimeRaw.includes('非') ? '非全日制' : fullTimeRaw.includes('全日制') ? '全日制' : '未知'
+    const fullTime = fullTimeRaw.includes('非') ? '非全日制' : fullTimeRaw.includes('全日制') || fullTimeRaw === '是' ? '全日制' : '未知'
     return {
       data: {
         name,

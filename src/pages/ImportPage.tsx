@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { FileUp, Download, ClipboardPaste, CheckCircle2, AlertTriangle, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
-import { useStore } from '@/lib/store'
+import { useStore, filterDuplicateResumes } from '@/lib/store'
 import { CSV_TEMPLATE, parseResumesFromCSV, type ParsedResume } from '@/lib/csv'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,16 +11,13 @@ import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-const SAMPLE_CSV = `姓名,电话,邮箱,职位,学历,工作年限,技能,来源
-孙志远,13611112222,sunzy@example.com,前端工程师,本科,4,React;TypeScript;Vite,BOSS直聘
-林晓梅,13733334444,linxm@example.com,后端工程师,硕士,6,Java;Spring Boot;Redis,猎聘
-黄国强,13855556666,huanggq@example.com,数据分析师,本科,3,Python;SQL;Pandas,拉勾网
-徐丽丽,13977778888,xull@example.com,UI设计师,本科,5,Figma;交互设计;Sketch,内推
-高建平,13599990000,gaojp@example.com,测试工程师,大专,7,自动化测试;Selenium,智联招聘
-梁思琪,13422223333,liangsq@example.com,产品经理,硕士,2,产品规划;用户研究,官网投递`
+const SAMPLE_CSV = `姓名,电话,邮箱,应聘岗位,年龄,教资学段,教资科目,毕业院校,是否全日制,专业,毕业年份,籍贯,学历,工作年限,技能,来源
+孙志远,13611112222,sunzy@example.com,高中语文教师,32,高中,语文,华中师范大学,全日制,汉语言文学,2015,湖北武汉,硕士,9,教学设计;作文指导;班主任工作,万行教师人才网
+林晓梅,13733334444,linxm@example.com,初中数学教师,27,初中,数学,北京师范大学,全日制,数学与应用数学,2020,河南郑州,本科,4,教学设计;分层教学,内推
+黄国强,13855556666,huanggq@example.com,小学英语教师,25,小学,英语,华东师范大学,全日制,英语（师范）,2022,江苏南京,本科,2,口语训练;家校沟通,校招双选会`
 
 export default function ImportPage() {
-  const { currentUser, dispatch } = useStore()
+  const { resumes, currentUser, dispatch } = useStore()
   const navigate = useNavigate()
   const fileRef = useRef<HTMLInputElement>(null)
   const [pasted, setPasted] = useState('')
@@ -74,8 +71,13 @@ export default function ImportPage() {
 
   const doImport = () => {
     if (valid.length === 0) return
-    dispatch({ type: 'importResumes', resumes: valid.map((v) => v.data), actorId: currentUser.id })
-    toast.success(`成功导入 ${valid.length} 份简历`)
+    const { unique, skipped } = filterDuplicateResumes(valid.map((v) => v.data), resumes)
+    if (unique.length === 0) {
+      toast.error('全部为重复简历（手机号/邮箱已存在），未导入')
+      return
+    }
+    dispatch({ type: 'importResumes', resumes: unique, actorId: currentUser.id })
+    toast.success(`成功导入 ${unique.length} 份简历${skipped > 0 ? `，跳过 ${skipped} 份重复` : ''}`)
     navigate('/resumes')
   }
 
