@@ -10,7 +10,8 @@ import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Mail, Phone, Briefcase, GraduationCap, Clock, Tag } from 'lucide-react'
+import { Mail, Phone, Briefcase, GraduationCap, Clock, Tag, Star, Building2, School, Award } from 'lucide-react'
+import { tagColor } from '@/lib/tags'
 import InterviewSection from './InterviewSection'
 import { toast } from 'sonner'
 
@@ -44,6 +45,23 @@ export default function ResumeDetail({
             <span className="text-xl">{resume.name}</span>
             <Badge variant="outline" className={STAGE_COLORS[resume.stage]}>{STAGE_LABELS[resume.stage]}</Badge>
           </SheetTitle>
+          <div className="flex items-center gap-1 pt-1" title="候选人综合评分">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => {
+                  const next = resume.rating === n ? 0 : n
+                  dispatch({ type: 'setRating', id: resume.id, rating: next })
+                  toast.success(next > 0 ? `已评 ${next} 星` : '已清除评分')
+                }}
+                className="p-0.5 transition-transform hover:scale-110"
+              >
+                <Star className={`h-5 w-5 ${n <= resume.rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'}`} />
+              </button>
+            ))}
+            <span className="ml-1 text-xs text-slate-400">{resume.rating > 0 ? `${resume.rating}/5` : '点击评分'}</span>
+          </div>
         </SheetHeader>
         <ScrollArea className="h-[calc(100vh-6rem)] pr-4">
           <div className="mt-4 space-y-6">
@@ -51,10 +69,38 @@ export default function ResumeDetail({
               <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-slate-400" />{resume.phone || '—'}</div>
               <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-slate-400" />{resume.email || '—'}</div>
               <div className="flex items-center gap-2 text-slate-600"><Briefcase className="h-4 w-4 text-slate-400" />{resume.position} · {resume.experience} 年经验</div>
-              <div className="flex items-center gap-2 text-slate-600"><GraduationCap className="h-4 w-4 text-slate-400" />{resume.education}</div>
+              <div className="flex items-center gap-2 text-slate-600"><GraduationCap className="h-4 w-4 text-slate-400" />{resume.education}{resume.university ? ` · ${resume.university}` : ''}</div>
               <div className="flex items-center gap-2 text-slate-600"><Tag className="h-4 w-4 text-slate-400" />来源：{resume.source}</div>
+              {resume.university && (
+                <div className="flex items-center gap-2 text-slate-600"><School className="h-4 w-4 text-slate-400" />{resume.university}</div>
+              )}
+              {resume.company && (
+                <div className="flex items-center gap-2 text-slate-600"><Building2 className="h-4 w-4 text-slate-400" />最近任职：{resume.company}</div>
+              )}
               <div className="flex items-center gap-2 text-slate-600"><Clock className="h-4 w-4 text-slate-400" />{format(resume.createdAt, 'yyyy-MM-dd HH:mm')}</div>
             </div>
+
+            {resume.tags.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="text-xs font-medium text-slate-500">智能标签</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {resume.tags.map((t) => (
+                    <Badge key={t} variant="outline" className={tagColor(t)}>{t}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {resume.certificates.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1 text-xs font-medium text-slate-500"><Award className="h-3.5 w-3.5" />技能证书</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {resume.certificates.map((c) => (
+                    <Badge key={c} variant="secondary" className="bg-amber-50 text-amber-700">{c}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {resume.skills.length > 0 && (
               <div className="flex flex-wrap gap-1.5">

@@ -1,4 +1,4 @@
-import type { Resume } from '@/types'
+import type { ImportableResume } from '@/lib/store'
 
 /** 解析 CSV 文本，支持引号包裹与逗号转义 */
 export function parseCSV(text: string): string[][] {
@@ -40,7 +40,7 @@ export function parseCSV(text: string): string[][] {
 }
 
 export interface ParsedResume {
-  data: Omit<Resume, 'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities'>
+  data: ImportableResume
   errors: string[]
 }
 

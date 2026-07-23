@@ -1,5 +1,7 @@
 /** 本地智能解析引擎：从简历纯文本中抽取结构化字段（中文简历规则 + 技能词典） */
 
+import { CERTIFICATE_DICT, deriveTags } from '@/lib/tags'
+
 export interface ParsedFields {
   name: string
   phone: string
@@ -8,6 +10,10 @@ export interface ParsedFields {
   education: string
   experience: number
   skills: string[]
+  university: string
+  company: string
+  certificates: string[]
+  tags: string[]
   /** 各字段置信度：low 的字段会在 UI 中提示人工确认 */
   lowConfidence: string[]
 }
@@ -129,6 +135,35 @@ function extractSkills(text: string): string[] {
   return [...found].slice(0, 12)
 }
 
+/** 证书识别（词典扫描，按文本出现顺序去重） */
+function extractCertificates(text: string): string[] {
+  const found = new Set<string>()
+  for (const cert of CERTIFICATE_DICT) {
+    if (text.includes(cert)) {
+      // 归一化同义证书
+      const normalized = cert === '英语四级' ? 'CET-4' : cert === '英语六级' ? 'CET-6' : cert
+      if (found.has(normalized)) continue
+      if ((cert === 'CET-4' && found.has('英语四级')) || (cert === 'CET-6' && found.has('英语六级'))) continue
+      found.add(normalized)
+    }
+  }
+  return [...found].slice(0, 8)
+}
+
+/** 毕业院校：匹配「XX大学 / XX学院」 */
+function extractUniversity(text: string): string {
+  const m = text.match(/[一-龥]{2,12}(?:大学|学院)(?![一-龥]*(?:路|街|区|城))/)
+  return m ? m[0] : ''
+}
+
+/** 最近任职公司：优先取「至今」所在段的公司名 */
+function extractCompany(text: string): string {
+  const current = text.match(/至今[^\n]{0,30}?([一-龥A-Za-z（(]{2,20}(?:公司|集团|科技|网络|软件|信息|互联网|银行|证券|研究院))/)
+  if (current) return current[1]
+  const any = text.match(/([一-龥A-Za-z（(]{2,20}(?:公司|集团|科技|网络|软件|信息|互联网|银行|证券|研究院))/)
+  return any ? any[1] : ''
+}
+
 /** 解析简历文本，返回结构化字段与低置信度字段列表 */
 export function parseResumeText(text: string, fileName: string): ParsedFields {
   const ls = lines(text)
@@ -139,6 +174,10 @@ export function parseResumeText(text: string, fileName: string): ParsedFields {
   const education = extractEducation(text)
   const experience = extractExperience(text)
   const skills = extractSkills(text)
+  const university = extractUniversity(text)
+  const company = extractCompany(text)
+  const certificates = extractCertificates(text)
+  const tags = deriveTags({ education: education || '未知', experience, certificates, university, company, rawText: text })
 
   const lowConfidence: string[] = []
   if (!name || !nameOk) lowConfidence.push('name')
@@ -153,6 +192,10 @@ export function parseResumeText(text: string, fileName: string): ParsedFields {
     education: education || '未知',
     experience,
     skills,
+    university,
+    company,
+    certificates,
+    tags,
     lowConfidence,
   }
 }

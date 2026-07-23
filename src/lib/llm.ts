@@ -73,6 +73,7 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
 /** 合并：LLM 结果优先，空字段回退到本地引擎结果 */
 export function mergeParsed(local: ParsedFields, llm: Partial<ParsedFields>): ParsedFields {
   const merged: ParsedFields = {
+    ...local,
     name: llm.name || local.name,
     phone: llm.phone || local.phone,
     email: llm.email || local.email,

@@ -1,17 +1,36 @@
 import { useMemo } from 'react'
-import { Link } from 'react-router'
-import { Contact, FileUp, UserCheck, Clock, TrendingUp } from 'lucide-react'
+import { Link, useNavigate } from 'react-router'
+import { Contact, FileUp, UserCheck, Clock, TrendingUp, BellRing, CalendarClock, Copy, Timer, UserX, MessageSquareWarning } from 'lucide-react'
 import { format, startOfToday, endOfWeek } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useStore } from '@/lib/store'
+import { computeReminders, LEVEL_STYLES, type Reminder } from '@/lib/reminders'
 import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, RESULT_LABELS, RESULT_COLORS } from '@/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import DashboardCharts from './DashboardCharts'
 
+const REMINDER_ICONS = {
+  interview: CalendarClock,
+  stale: Timer,
+  unassigned: UserX,
+  duplicate: Copy,
+  feedback: MessageSquareWarning,
+} as const
+
 export default function Dashboard() {
   const { resumes, users, interviews, currentUser } = useStore()
+  const navigate = useNavigate()
+
+  const reminders = useMemo(() => computeReminders(resumes, interviews), [resumes, interviews])
+
+  const goReminder = (r: Reminder) => {
+    const params = new URLSearchParams()
+    if (r.filter?.stage) params.set('stage', r.filter.stage)
+    if (r.filter?.assignee) params.set('assignee', r.filter.assignee)
+    navigate(`/resumes${params.size ? `?${params.toString()}` : ''}`)
+  }
 
   const stats = useMemo(() => {
     const byStage = Object.fromEntries(STAGE_ORDER.map((s) => [s, 0])) as Record<string, number>
@@ -93,6 +112,39 @@ export default function Dashboard() {
           <CardContent><div className="text-3xl font-bold text-indigo-600">{stats.assignedToMe}</div></CardContent>
         </Card>
       </div>
+
+      {/* 智能提醒 */}
+      {reminders.length > 0 && (
+        <Card className="border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <BellRing className="h-4 w-4 text-amber-600" />智能提醒
+              <Badge variant="secondary" className="bg-amber-100 text-amber-700">{reminders.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {reminders.map((r) => {
+                const Icon = REMINDER_ICONS[r.icon]
+                const style = LEVEL_STYLES[r.level]
+                return (
+                  <button
+                    key={r.id}
+                    onClick={() => goReminder(r)}
+                    className="flex items-start gap-2.5 rounded-lg border border-white bg-white/70 p-3 text-left transition-all hover:border-amber-300 hover:bg-white hover:shadow-sm"
+                  >
+                    <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${style.text}`} />
+                    <div className="min-w-0">
+                      <p className={`text-sm font-medium ${style.text}`}>{r.title}</p>
+                      <p className="truncate text-xs text-slate-500">{r.detail}</p>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <DashboardCharts />
 

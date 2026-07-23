@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router'
-import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router'
+import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
+import { tagColor } from '@/lib/tags'
+import { downloadCSV, resumesToCSV } from '@/lib/csv-export'
 import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -21,9 +23,10 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 export default function Resumes() {
   const { resumes, users, currentUser, dispatch } = useStore()
+  const [searchParams] = useSearchParams()
   const [keyword, setKeyword] = useState('')
-  const [stageFilter, setStageFilter] = useState<string>('all')
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('all')
+  const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
+  const [assigneeFilter, setAssigneeFilter] = useState<string>(searchParams.get('assignee') ?? 'all')
   const [positionFilter, setPositionFilter] = useState<string>('all')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [detailId, setDetailId] = useState<string | null>(null)
@@ -35,7 +38,7 @@ export default function Resumes() {
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
     return resumes.filter((r) => {
-      if (kw && ![r.name, r.phone, r.email, r.position, ...r.skills].join(' ').toLowerCase().includes(kw)) return false
+      if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
       if (stageFilter !== 'all' && r.stage !== stageFilter) return false
       if (assigneeFilter === 'me' && r.assigneeId !== currentUser.id) return false
       if (assigneeFilter === 'unassigned' && r.assigneeId) return false
@@ -85,6 +88,12 @@ export default function Resumes() {
             <ToggleGroupItem value="table" aria-label="表格视图"><List className="h-4 w-4" /></ToggleGroupItem>
             <ToggleGroupItem value="kanban" aria-label="看板视图"><LayoutGrid className="h-4 w-4" /></ToggleGroupItem>
           </ToggleGroup>
+          <Button variant="outline" onClick={() => {
+            downloadCSV(`简历导出-${new Date().toISOString().slice(0, 10)}.csv`, resumesToCSV(filtered, users))
+            toast.success(`已导出 ${filtered.length} 份简历`)
+          }}>
+            <Download className="mr-2 h-4 w-4" />导出
+          </Button>
           <Button variant="outline" asChild>
             <Link to="/ai-parse"><Sparkles className="mr-2 h-4 w-4" />AI 解析</Link>
           </Button>
@@ -173,6 +182,7 @@ export default function Resumes() {
               <TableHead>应聘职位</TableHead>
               <TableHead>经验 / 学历</TableHead>
               <TableHead>来源</TableHead>
+              <TableHead>标签</TableHead>
               <TableHead>阶段</TableHead>
               <TableHead>负责人</TableHead>
               <TableHead className="text-right">更新时间</TableHead>
@@ -187,12 +197,29 @@ export default function Resumes() {
                     <Checkbox checked={selected.has(r.id)} onCheckedChange={(c) => toggleOne(r.id, !!c)} />
                   </TableCell>
                   <TableCell>
-                    <div className="font-medium">{r.name}</div>
+                    <div className="flex items-center gap-1.5 font-medium">
+                      {r.name}
+                      {r.rating > 0 && (
+                        <span className="flex items-center" title={`评分 ${r.rating}/5`}>
+                          {Array.from({ length: r.rating }).map((_, i) => (
+                            <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-400" />
+                          ))}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-xs text-slate-400">{r.phone}</div>
                   </TableCell>
                   <TableCell>{r.position}</TableCell>
                   <TableCell className="text-slate-600">{r.experience} 年 · {r.education}</TableCell>
                   <TableCell className="text-slate-600">{r.source}</TableCell>
+                  <TableCell>
+                    <div className="flex max-w-[180px] flex-wrap gap-1">
+                      {r.tags.slice(0, 2).map((t) => (
+                        <Badge key={t} variant="outline" className={`text-[11px] ${tagColor(t)}`}>{t}</Badge>
+                      ))}
+                      {r.tags.length > 2 && <span className="text-[11px] text-slate-400">+{r.tags.length - 2}</span>}
+                    </div>
+                  </TableCell>
                   <TableCell><Badge variant="outline" className={STAGE_COLORS[r.stage]}>{STAGE_LABELS[r.stage]}</Badge></TableCell>
                   <TableCell>
                     {assignee ? (
@@ -214,7 +241,7 @@ export default function Resumes() {
             })}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="py-12 text-center text-slate-400">
+                <TableCell colSpan={9} className="py-12 text-center text-slate-400">
                   没有符合条件的简历，试试调整筛选条件或<Link to="/import" className="text-indigo-600 hover:underline">批量导入</Link>
                 </TableCell>
               </TableRow>

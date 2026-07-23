@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useS
 import type { Activity, Interview, Resume, Stage, User } from '@/types'
 import { STAGE_LABELS, RESULT_LABELS } from '@/types'
 import { SEED_USERS, seedResumes, seedInterviews } from '@/lib/seed'
+import { normalizeResume } from '@/lib/tags'
 import { getClientId, getSyncUrl, pullRemote, pushRemote, setSyncUrl, type SharedState } from '@/lib/sync'
 
 interface State {
@@ -23,13 +24,18 @@ type Action =
   | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location'>>; actorId: string }
   | { type: 'deleteInterview'; id: string }
   | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[] }
+  | { type: 'setRating'; id: string; rating: number }
   | { type: 'resetData' }
 
 export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 
-export type ImportableResume = Omit<Resume, 'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities'> & {
+export type ImportableResume = Omit<Resume, 'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'> & {
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
   initialNote?: string
+  university?: string
+  company?: string
+  certificates?: string[]
+  tags?: string[]
 }
 
 const STORAGE_KEY = 'hireflow-state-v1'
@@ -53,8 +59,8 @@ function init(): State {
     if (raw) {
       const parsed = JSON.parse(raw) as State
       if (parsed.users?.length && parsed.resumes && parsed.currentUserId) {
-        // 旧版本数据缺少 interviews 字段时自动补齐
-        return { ...parsed, interviews: parsed.interviews ?? [] }
+        // 旧版本数据缺少 interviews / 新增字段时自动补齐
+        return { ...parsed, interviews: parsed.interviews ?? [], resumes: parsed.resumes.map(normalizeResume) }
       }
     }
   } catch {
@@ -69,7 +75,12 @@ function reducer(state: State, action: Action): State {
     case 'importResumes': {
       const created: Resume[] = action.resumes.map((r) => {
         const { initialNote, ...fields } = r
-        return {
+        return normalizeResume({
+          university: '',
+          company: '',
+          certificates: [],
+          tags: [],
+          rating: 0,
           ...fields,
           id: uid('r'),
           createdAt: now,
@@ -78,7 +89,7 @@ function reducer(state: State, action: Action): State {
             ? [{ id: uid('n'), authorId: action.actorId, content: initialNote, createdAt: now }]
             : [],
           activities: [activity(action.actorId, '批量导入简历')],
-        }
+        })
       })
       return { ...state, resumes: [...created, ...state.resumes] }
     }
@@ -179,7 +190,13 @@ function reducer(state: State, action: Action): State {
       const currentUserId = action.users.some((u) => u.id === state.currentUserId)
         ? state.currentUserId
         : (action.users[0]?.id ?? state.currentUserId)
-      return { ...state, users: action.users, resumes: action.resumes, interviews: action.interviews, currentUserId }
+      return { ...state, users: action.users, resumes: action.resumes.map(normalizeResume), interviews: action.interviews, currentUserId }
+    }
+    case 'setRating': {
+      return {
+        ...state,
+        resumes: state.resumes.map((r) => (r.id === action.id ? { ...r, rating: action.rating, updatedAt: now } : r)),
+      }
     }
     default:
       return state

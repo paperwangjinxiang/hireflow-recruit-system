@@ -36,6 +36,11 @@ export interface Resume {
   source: string
   stage: Stage
   assigneeId: string | null
+  university: string // 毕业院校
+  company: string // 最近任职公司
+  certificates: string[] // 证书资质
+  tags: string[] // 智能标签（985/211、大厂背景、资深专家等）
+  rating: number // 星级评分 0-5
   createdAt: number
   updatedAt: number
   notes: Note[]

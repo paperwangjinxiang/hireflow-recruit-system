@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
 import { detectKind, extractText } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
+import { tagColor } from '@/lib/tags'
 import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, type LlmConfig } from '@/lib/llm'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -131,6 +132,10 @@ export default function AiParse() {
         education: i.fields.education,
         experience: i.fields.experience,
         skills: i.fields.skills,
+        university: i.fields.university,
+        company: i.fields.company,
+        certificates: i.fields.certificates,
+        tags: i.fields.tags,
         source: i.method === 'ai' ? 'AI 解析' : '智能解析',
         stage: 'new' as const,
         assigneeId: null,
@@ -354,6 +359,33 @@ export default function AiParse() {
                         onChange={(e) => updateField(item.id, { skills: e.target.value.split(/[、,，;；]/).map((s) => s.trim()).filter(Boolean) })}
                       />
                     </div>
+                    {(item.fields.university || item.fields.company || item.fields.certificates.length > 0 || item.fields.tags.length > 0) && (
+                      <div className="col-span-2 space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
+                        {(item.fields.university || item.fields.company) && (
+                          <div className="text-slate-600">
+                            {item.fields.university && <span>毕业院校：{item.fields.university}</span>}
+                            {item.fields.university && item.fields.company && <span className="mx-2 text-slate-300">|</span>}
+                            {item.fields.company && <span>最近任职：{item.fields.company}</span>}
+                          </div>
+                        )}
+                        {item.fields.certificates.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="text-slate-500">证书：</span>
+                            {item.fields.certificates.map((c) => (
+                              <Badge key={c} variant="secondary" className="bg-amber-50 px-1.5 py-0 text-[10px] text-amber-700">{c}</Badge>
+                            ))}
+                          </div>
+                        )}
+                        {item.fields.tags.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="text-slate-500">智能标签：</span>
+                            {item.fields.tags.map((t) => (
+                              <Badge key={t} variant="outline" className={`px-1.5 py-0 text-[10px] ${tagColor(t)}`}>{t}</Badge>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               )}
@@ -366,7 +398,7 @@ export default function AiParse() {
 }
 
 function emptyFields(): ParsedFields {
-  return { name: '', phone: '', email: '', position: '', education: '未知', experience: 0, skills: [], lowConfidence: [] }
+  return { name: '', phone: '', email: '', position: '', education: '未知', experience: 0, skills: [], university: '', company: '', certificates: [], tags: [], lowConfidence: [] }
 }
 
 function FieldInput({ label, value, onChange, warn }: { label: string; value: string; onChange: (v: string) => void; warn?: boolean }) {

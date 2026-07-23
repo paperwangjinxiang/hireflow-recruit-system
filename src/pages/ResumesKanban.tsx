@@ -4,7 +4,8 @@ import { useStore } from '@/lib/store'
 import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { MessageSquare, GripVertical } from 'lucide-react'
+import { MessageSquare, GripVertical, Star } from 'lucide-react'
+import { tagColor } from '@/lib/tags'
 import { cn } from '@/lib/utils'
 
 /** 简历看板：按阶段分列，拖拽卡片流转阶段，点击卡片查看详情 */
@@ -81,7 +82,16 @@ export default function ResumesKanban({
                     )}
                   >
                     <div className="flex items-start justify-between gap-1">
-                      <span className="font-medium leading-tight">{r.name}</span>
+                      <span className="flex items-center gap-1 font-medium leading-tight">
+                        {r.name}
+                        {r.rating > 0 && (
+                          <span className="flex items-center">
+                            {Array.from({ length: r.rating }).map((_, i) => (
+                              <Star key={i} className="h-2.5 w-2.5 fill-amber-400 text-amber-400" />
+                            ))}
+                          </span>
+                        )}
+                      </span>
                       <GripVertical className="h-4 w-4 shrink-0 text-slate-300 group-hover:text-slate-400" />
                     </div>
                     <p className="mt-0.5 truncate text-xs text-slate-500">{r.position} · {r.experience} 年</p>
@@ -92,6 +102,16 @@ export default function ResumesKanban({
                         ))}
                         {r.skills.length > 3 && (
                           <span className="text-[10px] text-slate-400">+{r.skills.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                    {r.tags.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {r.tags.slice(0, 2).map((t) => (
+                          <Badge key={t} variant="outline" className={`px-1.5 py-0 text-[10px] ${tagColor(t)}`}>{t}</Badge>
+                        ))}
+                        {r.tags.length > 2 && (
+                          <span className="text-[10px] text-slate-400">+{r.tags.length - 2}</span>
                         )}
                       </div>
                     )}

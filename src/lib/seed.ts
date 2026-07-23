@@ -1,4 +1,5 @@
 import type { Interview, Resume, Stage, User } from '@/types'
+import { deriveTags } from '@/lib/tags'
 
 export const SEED_USERS: User[] = [
   { id: 'u-admin', name: '林总监', role: 'admin', email: 'admin@hireflow.cn', color: '#6366f1' },
@@ -27,6 +28,13 @@ const SKILL_POOL = [
 ]
 const STAGES: Stage[] = ['new', 'new', 'screening', 'screening', 'interview', 'interview', 'offer', 'hired', 'rejected']
 
+const UNIVERSITIES = ['华中科技大学', '武汉大学', '浙江大学', '北京邮电大学', '四川大学', '重庆大学', '湖南大学', '东北大学']
+const COMPANIES = ['腾讯', '字节跳动', '美团', '华为', '小米', '某互联网公司', '某软件公司', '某科技企业']
+const CERT_SETS: string[][] = [
+  ['CET-6', 'PMP'], ['CET-4'], ['CET-6', '软考中级'], [], ['CET-6', '教师资格证'],
+  ['PMP', 'ACP'], ['CET-4', '计算机二级'], [], ['CET-6', 'HCIA'], ['雅思'],
+]
+
 function pick<T>(arr: T[], i: number): T {
   return arr[i % arr.length]
 }
@@ -52,6 +60,17 @@ export function seedResumes(): Resume[] {
       source: pick(SOURCES, i),
       stage,
       assigneeId,
+      university: pick(UNIVERSITIES, i),
+      company: pick(COMPANIES, i + 2),
+      certificates: pick(CERT_SETS, i),
+      tags: deriveTags({
+        education: pick(EDUCATIONS, i + 1),
+        experience: (i * 3 + 1) % 12,
+        certificates: pick(CERT_SETS, i),
+        university: pick(UNIVERSITIES, i),
+        company: pick(COMPANIES, i + 2),
+      }),
+      rating: i % 5 === 0 ? 4 : i % 5 === 1 ? 5 : i % 3,
       createdAt: created,
       updatedAt: created + day * 0.5,
       notes:
