@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock } from 'lucide-react'
+import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock, Contact } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
 import { tagColor } from '@/lib/tags'
@@ -24,6 +24,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 export default function Resumes() {
   const { resumes, users, jobs, currentUser, dispatch } = useStore()
   const [searchParams] = useSearchParams()
+  const [pool, setPool] = useState<'pool' | 'mine'>((searchParams.get('pool') as 'pool' | 'mine') ?? 'pool')
   const [keyword, setKeyword] = useState('')
   const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
   const [assigneeFilter, setAssigneeFilter] = useState<string>(searchParams.get('assignee') ?? 'all')
@@ -35,9 +36,19 @@ export default function Resumes() {
 
   const positions = useMemo(() => [...new Set(resumes.map((r) => r.position))].sort(), [resumes])
 
+  /** 我锁定的简历数量（个人库角标） */
+  const myLockedCount = useMemo(
+    () => resumes.filter((r) => r.jobId && r.lockedBy === currentUser.id).length,
+    [resumes, currentUser.id],
+  )
+
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
     return resumes.filter((r) => {
+      // 总简历库不显示已被锁定到岗位的简历（明确按阶段筛选时除外，便于从仪表盘下钻查看）；
+      // 个人库只显示我锁定的简历
+      if (pool === 'pool' && r.jobId && stageFilter === 'all') return false
+      if (pool === 'mine' && !(r.jobId && r.lockedBy === currentUser.id)) return false
       if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, r.major, r.hometown, r.certSubject, r.certStage, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
       if (stageFilter !== 'all' && r.stage !== stageFilter) return false
       if (assigneeFilter === 'me' && r.assigneeId !== currentUser.id) return false
@@ -46,7 +57,7 @@ export default function Resumes() {
       if (positionFilter !== 'all' && r.position !== positionFilter) return false
       return true
     })
-  }, [resumes, keyword, stageFilter, assigneeFilter, positionFilter, currentUser.id])
+  }, [resumes, keyword, pool, stageFilter, assigneeFilter, positionFilter, currentUser.id])
 
   const selectedIds = [...selected].filter((id) => filtered.some((r) => r.id === id))
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id))
@@ -80,10 +91,21 @@ export default function Resumes() {
     <div className="space-y-5 p-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">简历库</h1>
-          <p className="text-sm text-slate-500">共 {filtered.length} 份简历{selectedIds.length > 0 && `，已选 ${selectedIds.length} 份`}</p>
+          <h1 className="text-2xl font-bold">{pool === 'pool' ? '总简历库' : '我的简历库'}</h1>
+          <p className="text-sm text-slate-500">
+            {pool === 'pool'
+              ? `共 ${filtered.length} 份可调配简历（已锁定到岗位的简历在专员的个人库中）`
+              : `我锁定的 ${filtered.length} 份简历，面试不通过或放弃入职释放后自动退回总库`}
+            {selectedIds.length > 0 && `，已选 ${selectedIds.length} 份`}
+          </p>
         </div>
         <div className="flex items-center gap-2">
+          <ToggleGroup type="single" value={pool} onValueChange={(v) => v && setPool(v as 'pool' | 'mine')} variant="outline">
+            <ToggleGroupItem value="pool" className="gap-1 px-3"><Contact className="h-4 w-4" />总简历库</ToggleGroupItem>
+            <ToggleGroupItem value="mine" className="gap-1 px-3">
+              <Lock className="h-4 w-4" />我的简历库{myLockedCount > 0 && <span className="ml-0.5 rounded-full bg-cyan-100 px-1.5 text-[10px] font-semibold text-cyan-700">{myLockedCount}</span>}
+            </ToggleGroupItem>
+          </ToggleGroup>
           <ToggleGroup type="single" value={view} onValueChange={(v) => v && setView(v as 'table' | 'kanban')} variant="outline">
             <ToggleGroupItem value="table" aria-label="表格视图"><List className="h-4 w-4" /></ToggleGroupItem>
             <ToggleGroupItem value="kanban" aria-label="看板视图"><LayoutGrid className="h-4 w-4" /></ToggleGroupItem>

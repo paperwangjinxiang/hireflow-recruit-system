@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router'
-import { LayoutDashboard, Users, FileUp, Contact, ChevronsUpDown, Sparkles, BriefcaseBusiness } from 'lucide-react'
+import { LayoutDashboard, Users, FileUp, Contact, ChevronsUpDown, Sparkles, BriefcaseBusiness, ClipboardList } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { ROLE_LABELS } from '@/types'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -18,6 +18,7 @@ const NAV = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, end: true },
   { to: '/jobs', label: '职位发布', icon: BriefcaseBusiness },
   { to: '/resumes', label: '简历库', icon: Contact },
+  { to: '/progress', label: '招聘进展', icon: ClipboardList },
   { to: '/import', label: '批量导入', icon: FileUp },
   { to: '/ai-parse', label: 'AI 解析', icon: Sparkles },
   { to: '/team', label: '团队成员', icon: Users },

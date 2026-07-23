@@ -56,6 +56,9 @@ export type ImportableResume = Omit<
 }
 
 const STORAGE_KEY = 'hireflow-state-v2'
+/** 同步游标持久化：防止刷新后未推送的本地修改被云端旧数据覆盖 */
+const DIRTY_KEY = 'hireflow-sync-dirty'
+const REMOTE_TS_KEY = 'hireflow-sync-remote-ts'
 
 /** 按手机号/邮箱过滤与库中已有简历重复的导入项（同时去除导入批次内部重复） */
 export function filterDuplicateResumes<T extends { phone?: string; email?: string }>(
@@ -385,15 +388,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [syncUrl, setSyncUrlState] = useState(getSyncUrl)
   const clientIdRef = useRef(getClientId())
-  const dirtyRef = useRef(false)
-  const lastRemoteRef = useRef(0)
+  // 恢复上次的同步游标：本地若有未推送的修改，刷新后先推送而不是被云端覆盖
+  const dirtyRef = useRef(typeof localStorage !== 'undefined' && localStorage.getItem(DIRTY_KEY) === '1')
+  const lastRemoteRef = useRef(typeof localStorage !== 'undefined' ? Number(localStorage.getItem(REMOTE_TS_KEY) ?? 0) : 0)
   const pushingRef = useRef(false)
   const stateRef = useRef(state)
   stateRef.current = state
 
+  const persistSyncMarks = (dirty: boolean, remoteTs?: number) => {
+    try {
+      localStorage.setItem(DIRTY_KEY, dirty ? '1' : '0')
+      if (remoteTs !== undefined) localStorage.setItem(REMOTE_TS_KEY, String(remoteTs))
+    } catch {
+      // 存储不可用时仅内存内跟踪
+    }
+  }
+
   const dispatch = useMemo<React.Dispatch<Action>>(
     () => (action) => {
-      if (action.type !== 'applyRemote') dirtyRef.current = true
+      if (action.type !== 'applyRemote') {
+        dirtyRef.current = true
+        persistSyncMarks(true)
+      }
       baseDispatch(action)
     },
     [],
@@ -411,6 +427,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updatedAt !== null) {
         lastRemoteRef.current = updatedAt
         dirtyRef.current = false
+        persistSyncMarks(false, updatedAt)
         setSyncStatus('ok')
         setLastSyncAt(Date.now())
       } else {
@@ -422,6 +439,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const doPull = useMemo(
     () => async () => {
+      // 本地有未推送的修改时先推送，避免被云端旧数据覆盖
+      if (dirtyRef.current) {
+        await doPush()
+        return
+      }
       const payload = await pullRemote()
       if (payload === undefined) {
         setSyncStatus('error')
@@ -430,6 +452,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (payload.state === null) {
         // 云端是空库：把本地数据推上去
         dirtyRef.current = true
+        persistSyncMarks(true)
         await doPush()
         return
       }
@@ -437,7 +460,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         lastRemoteRef.current = payload.updatedAt
         if (payload.origin !== clientIdRef.current && payload.state) {
           dirtyRef.current = false // 应用云端数据，避免回推造成回环
+          persistSyncMarks(false, payload.updatedAt)
           baseDispatch({ type: 'applyRemote', ...payload.state })
+        } else {
+          persistSyncMarks(false, payload.updatedAt)
         }
         setLastSyncAt(Date.now())
       }
