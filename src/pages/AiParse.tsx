@@ -26,6 +26,8 @@ interface FileItem {
   status: 'processing' | 'done' | 'error'
   error?: string
   method?: 'ai' | 'local'
+  /** 处理中的进度提示（如 OCR 识别进度） */
+  progress?: string
   rawText: string
   fields: ParsedFields
 }
@@ -81,10 +83,12 @@ export default function AiParse() {
     }
     setItems((prev) => [...pairs.map((p) => p.item), ...prev])
     for (const { item, file } of pairs) {
+      const setProgress = (msg: string) =>
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: msg } : i)))
       try {
-        const text = await extractText(file)
-        if (!text.trim()) throw new Error('未能提取到文本内容（可能是扫描件图片型 PDF）')
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, rawText: text } : i)))
+        const text = await extractText(file, setProgress)
+        if (!text.trim()) throw new Error('OCR 也无法识别出文字，请上传更清晰的扫描件或文字版简历')
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, rawText: text, progress: '解析字段中…' } : i)))
         await processOne(item.id, item.fileName, text)
       } catch (e) {
         setItems((prev) =>
@@ -242,7 +246,7 @@ export default function AiParse() {
           >
             <FileUp className="h-10 w-10 text-indigo-400" />
             <p className="font-medium">点击选择或拖拽简历文件到此处</p>
-            <p className="text-xs text-slate-400">支持 PDF、DOCX、TXT、MD，可一次选择多份批量解析</p>
+            <p className="text-xs text-slate-400">支持 PDF、DOCX、TXT、MD，可一次选择多份批量解析；扫描件图片型 PDF 自动启用 OCR 识别</p>
           </div>
           <input
             ref={fileRef}
@@ -299,7 +303,9 @@ export default function AiParse() {
                   <FileText className="h-4 w-4 text-slate-400" />
                   {item.fileName}
                   {item.status === 'processing' && (
-                    <Badge variant="secondary"><Loader2 className="mr-1 h-3 w-3 animate-spin" />解析中…</Badge>
+                    <Badge variant="secondary" title={item.progress}>
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />{item.progress ?? '解析中…'}
+                    </Badge>
                   )}
                   {item.status === 'done' && (
                     <Badge className={item.method === 'ai' ? 'bg-indigo-100 text-indigo-700 hover:bg-indigo-100' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100'}>

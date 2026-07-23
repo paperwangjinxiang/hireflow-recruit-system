@@ -15,8 +15,8 @@ export function detectKind(fileName: string): ResumeFileKind | null {
   return null
 }
 
-async function extractPdf(buffer: ArrayBuffer): Promise<string> {
-  const doc = await pdfjs.getDocument({ data: buffer }).promise
+/** 提取 PDF 文字层 */
+async function extractPdfTextLayer(doc: pdfjs.PDFDocumentProxy): Promise<string> {
   const parts: string[] = []
   for (let i = 1; i <= doc.numPages; i++) {
     const page = await doc.getPage(i)
@@ -38,17 +38,63 @@ async function extractPdf(buffer: ArrayBuffer): Promise<string> {
   return parts.join('\n')
 }
 
+/** OCR 兜底：把 PDF 页面渲染成图片，用 Tesseract 做中文识别（扫描件/图片型 PDF） */
+async function ocrPdf(doc: pdfjs.PDFDocumentProxy, onProgress?: (msg: string) => void): Promise<string> {
+  const { createWorker } = await import('tesseract.js')
+  const maxPages = Math.min(doc.numPages, 5) // 简历页数有限，防止超大文件卡死
+  let lastReported = -1
+  const worker = await createWorker('chi_sim', 1, {
+    logger: (m: { status: string; progress?: number }) => {
+      if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+        const pct = Math.round(m.progress * 10)
+        if (pct !== lastReported) {
+          lastReported = pct
+          onProgress?.(`OCR 识别中… ${Math.round(m.progress * 100)}%`)
+        }
+      }
+    },
+  })
+  try {
+    const texts: string[] = []
+    for (let i = 1; i <= maxPages; i++) {
+      onProgress?.(`OCR 识别第 ${i}/${maxPages} 页（首次使用需下载中文模型，请稍候）…`)
+      const page = await doc.getPage(i)
+      const viewport = page.getViewport({ scale: 2 })
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.ceil(viewport.width)
+      canvas.height = Math.ceil(viewport.height)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('无法创建画布上下文')
+      await page.render({ canvasContext: ctx, viewport }).promise
+      const { data } = await worker.recognize(canvas)
+      texts.push(data.text)
+    }
+    return texts.join('\n')
+  } finally {
+    await worker.terminate()
+  }
+}
+
+async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => void): Promise<string> {
+  const doc = await pdfjs.getDocument({ data: buffer }).promise
+  const text = await extractPdfTextLayer(doc)
+  // 文字层内容过少 → 判定为扫描件/图片型 PDF，走 OCR
+  if (text.replace(/\s/g, '').length >= 30) return text
+  onProgress?.('未检测到文字层，正在启用 OCR 识别…')
+  return ocrPdf(doc, onProgress)
+}
+
 async function extractDocx(buffer: ArrayBuffer): Promise<string> {
   const result = await mammoth.extractRawText({ arrayBuffer: buffer })
   return result.value
 }
 
-/** 从文件中提取纯文本（PDF / DOCX / 纯文本） */
-export async function extractText(file: File): Promise<string> {
+/** 从文件中提取纯文本（PDF / DOCX / 纯文本；扫描件 PDF 自动走 OCR） */
+export async function extractText(file: File, onProgress?: (msg: string) => void): Promise<string> {
   const kind = detectKind(file.name)
   if (!kind) throw new Error(`不支持的文件格式：${file.name}`)
   if (kind === 'text') return file.text()
   const buffer = await file.arrayBuffer()
-  if (kind === 'pdf') return extractPdf(buffer)
+  if (kind === 'pdf') return extractPdf(buffer, onProgress)
   return extractDocx(buffer)
 }
