@@ -1,0 +1,5 @@
+{
+  "manifestUrl": "https://jsonblob.com/api/jsonBlob/019f92e6-15c3-7fee-85d8-2d836de4da66",
+  "refreshedAt": "2026-07-24T06:53:00Z",
+  "note": "HireFlow 云端共享库指针。JSONBlob 匿名 blob 24 小时过期，由本机定时任务每 12 小时迁移数据并更新本文件。"
+}
