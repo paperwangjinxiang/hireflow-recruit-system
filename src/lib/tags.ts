@@ -100,6 +100,8 @@ export function normalizeResume(r: Resume): Resume {
     hometown: r.hometown ?? '',
     fullTime: (r.fullTime ?? '未知') as FullTime,
     major,
+    idCard: r.idCard ?? '',
+    rawText: r.rawText ?? '',
     jobId: r.jobId ?? null,
     lockedBy: r.lockedBy ?? null,
     lockedAt: r.lockedAt ?? null,

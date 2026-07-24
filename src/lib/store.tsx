@@ -39,6 +39,7 @@ export type ImportableResume = Omit<
   Resume,
   'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'
   | 'age' | 'certStage' | 'certSubject' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
+  | 'idCard' | 'rawText'
 > & {
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
   initialNote?: string
@@ -53,6 +54,8 @@ export type ImportableResume = Omit<
   hometown?: string
   fullTime?: Resume['fullTime']
   major?: string
+  idCard?: string
+  rawText?: string
 }
 
 const STORAGE_KEY = 'hireflow-state-v2'
@@ -138,6 +141,8 @@ function reducer(state: State, action: Action): State {
           hometown: '',
           fullTime: '未知',
           major: '',
+          idCard: '',
+          rawText: '',
           jobId: null,
           lockedBy: null,
           lockedAt: null,

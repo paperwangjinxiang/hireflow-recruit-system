@@ -10,6 +10,7 @@ import { detectKind, extractText } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
 import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, type LlmConfig } from '@/lib/llm'
+import { maskIdCard } from '@/lib/regions'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -82,7 +83,8 @@ export default function AiParse() {
       pairs.push({ item, file })
     }
     setItems((prev) => [...pairs.map((p) => p.item), ...prev])
-    for (const { item, file } of pairs) {
+    // 受限并发解析：3 个 worker 消费队列（OCR 场景下 Tesseract 单线程天然受限）
+    const runOne = async ({ item, file }: { item: FileItem; file: File }) => {
       const setProgress = (msg: string) =>
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: msg } : i)))
       try {
@@ -96,6 +98,14 @@ export default function AiParse() {
         )
       }
     }
+    let cursor = 0
+    const workers = Array.from({ length: Math.min(3, pairs.length) }, async () => {
+      while (cursor < pairs.length) {
+        const pair = pairs[cursor++]
+        await runOne(pair)
+      }
+    })
+    await Promise.all(workers)
   }
 
   function handlePasteParse() {
@@ -144,6 +154,8 @@ export default function AiParse() {
       hometown: i.fields.hometown,
       fullTime: i.fields.fullTime,
       major: i.fields.major,
+      idCard: i.fields.idCard,
+      rawText: i.rawText.slice(0, 20000),
       source: i.method === 'ai' ? 'AI 解析' : '智能解析',
       stage: 'imported' as const,
       assigneeId: null,
@@ -399,6 +411,8 @@ export default function AiParse() {
                       <div className="col-span-2 space-y-2 rounded-lg bg-slate-50 p-3 text-xs">
                         <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-600">
                           {item.fields.age > 0 && <span>年龄：{item.fields.age} 岁</span>}
+                          {item.fields.gender && <span>性别：{item.fields.gender}</span>}
+                          {item.fields.idCard && <span>身份证：{maskIdCard(item.fields.idCard)}</span>}
                           {item.fields.certStage && <span className="font-medium text-teal-700">{item.fields.certStage}{item.fields.certSubject}教资</span>}
                           {item.fields.university && <span>院校：{item.fields.university}{item.fields.fullTime !== '未知' ? `（${item.fields.fullTime}）` : ''}</span>}
                           {item.fields.major && <span>专业：{item.fields.major}</span>}
@@ -440,6 +454,7 @@ function emptyFields(): ParsedFields {
     name: '', phone: '', email: '', position: '', education: '未知', experience: 0,
     skills: [], university: '', company: '', certificates: [], tags: [],
     age: 0, certStage: '', certSubject: '', gradYear: 0, hometown: '', fullTime: '未知', major: '',
+    idCard: '', gender: '',
     lowConfidence: [],
   }
 }

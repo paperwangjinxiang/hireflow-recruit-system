@@ -19,27 +19,32 @@ export function detectKind(fileName: string): ResumeFileKind | null {
 /** 扫描件 OCR 最多处理的页数（简历页数有限，防止超大文件卡死） */
 const OCR_MAX_PAGES = 5
 
-/** 提取 PDF 文字层 */
+/** 提取 PDF 文字层（所有页并发取 textContent，再按页拼接重组行结构） */
 async function extractPdfTextLayer(doc: pdfjs.PDFDocumentProxy): Promise<string> {
-  const parts: string[] = []
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i)
-    const content = await page.getTextContent()
-    // 按行重组：利用 hasEOL 与纵坐标变化还原简历的行结构
-    let pageText = ''
-    let lastY: number | null = null
-    for (const item of content.items) {
-      if (!('str' in item)) continue
-      const y = item.transform[5]
-      if (lastY !== null && Math.abs(y - lastY) > 2) pageText += '\n'
-      else if (lastY !== null && pageText.length > 0) pageText += ' '
-      pageText += item.str
-      if (item.hasEOL) pageText += '\n'
-      lastY = item.transform[5]
-    }
-    parts.push(pageText)
-  }
-  return parts.join('\n')
+  const pageNums = Array.from({ length: doc.numPages }, (_, i) => i + 1)
+  const contents = await Promise.all(
+    pageNums.map(async (i) => {
+      const page = await doc.getPage(i)
+      return page.getTextContent()
+    }),
+  )
+  return contents
+    .map((content) => {
+      // 按行重组：利用 hasEOL 与纵坐标变化还原简历的行结构
+      let pageText = ''
+      let lastY: number | null = null
+      for (const item of content.items) {
+        if (!('str' in item)) continue
+        const y = item.transform[5]
+        if (lastY !== null && Math.abs(y - lastY) > 2) pageText += '\n'
+        else if (lastY !== null && pageText.length > 0) pageText += ' '
+        pageText += item.str
+        if (item.hasEOL) pageText += '\n'
+        lastY = item.transform[5]
+      }
+      return pageText
+    })
+    .join('\n')
 }
 
 /** 把 PDF 页面渲染为 JPEG dataURL（供视觉模型识别） */

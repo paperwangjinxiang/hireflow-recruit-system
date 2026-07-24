@@ -2,6 +2,7 @@
 
 import { CERTIFICATE_DICT, deriveTags } from '@/lib/tags'
 import { TEACHER_SUBJECTS, type CertStage, type FullTime } from '@/types'
+import { regionFromIdCard, genderFromIdCard, ageFromIdCard, isValidIdCard } from '@/lib/regions'
 
 export interface ParsedFields {
   name: string
@@ -22,6 +23,10 @@ export interface ParsedFields {
   hometown: string
   fullTime: FullTime
   major: string
+  /** 身份证号（18 位，从正文提取） */
+  idCard: string
+  /** 性别（由身份证号第 17 位推断） */
+  gender: '男' | '女' | ''
   /** 各字段置信度：low 的字段会在 UI 中提示人工确认 */
   lowConfidence: string[]
 }
@@ -230,6 +235,12 @@ function extractHometown(text: string): string {
   return m ? m[1].trim() : ''
 }
 
+/** 身份证号：18 位（末位可为 X），前后不与其他数字相连 */
+function extractIdCard(text: string): string {
+  const m = text.match(/(?<!\d)\d{17}[\dXx](?!\d)/)
+  return m && isValidIdCard(m[0]) ? m[0].toUpperCase() : ''
+}
+
 /** 是否全日制 */
 function extractFullTime(text: string): FullTime {
   if (/非全日制|在职(?:读研|研究生|硕士)/.test(text)) return '非全日制'
@@ -271,10 +282,12 @@ export function parseResumeText(rawText: string, fileName: string): ParsedFields
   const university = extractUniversity(text)
   const company = extractCompany(text)
   const certificates = extractCertificates(text)
-  const age = extractAge(text)
+  const idCard = extractIdCard(text)
+  const age = extractAge(text) || ageFromIdCard(idCard)
   const { certStage, certSubject } = extractTeacherCert(text)
   const gradYear = extractGradYear(text)
-  const hometown = extractHometown(text)
+  // 籍贯：正文未提到时，用身份证地址码反查户籍地
+  const hometown = extractHometown(text) || regionFromIdCard(idCard)?.label || ''
   const fullTime = extractFullTime(text)
   const major = extractMajor(text)
   const tags = deriveTags({
@@ -314,6 +327,8 @@ export function parseResumeText(rawText: string, fileName: string): ParsedFields
     hometown,
     fullTime,
     major,
+    idCard,
+    gender: genderFromIdCard(idCard),
     lowConfidence,
   }
 }

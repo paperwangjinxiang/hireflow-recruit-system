@@ -58,6 +58,7 @@ const HEADER_MAP: Record<string, string> = {
   教资科目: 'certSubject', 教师资格证科目: 'certSubject', 科目: 'certSubject',
   毕业年份: 'gradYear', 毕业时间: 'gradYear',
   籍贯: 'hometown', hometown: 'hometown',
+  身份证: 'idCard', 身份证号: 'idCard', idcard: 'idCard',
   毕业院校: 'university', 院校: 'university', university: 'university',
   是否全日制: 'fullTime', 全日制: 'fullTime',
   专业: 'major', major: 'major',
@@ -116,6 +117,7 @@ export function parseResumesFromCSV(text: string): ParsedResume[] {
         fullTime,
         major: get('major'),
         university: get('university'),
+        idCard: get('idCard'),
       },
       errors,
     }

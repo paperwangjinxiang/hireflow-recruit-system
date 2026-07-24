@@ -68,6 +68,8 @@ export interface Resume {
   hometown: string // 籍贯
   fullTime: FullTime // 是否全日制
   major: string // 专业
+  idCard: string // 身份证号（导入/解析时提取）
+  rawText: string // 简历解析出的全文（截断到 20000 字符）
   // ---- 岗位锁定 ----
   jobId: string | null // 锁定的职位
   lockedBy: string | null // 锁定人

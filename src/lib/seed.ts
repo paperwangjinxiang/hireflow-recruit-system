@@ -102,6 +102,8 @@ export function seedResumes(): Resume[] {
       hometown: t.hometown,
       fullTime: t.fullTime,
       major: t.major,
+      idCard: '',
+      rawText: '',
       jobId: matchedJob,
       lockedBy: matchedJob ? pick(['u-hr1', 'u-hr2'], i) : null,
       lockedAt: matchedJob ? created + day : null,
