@@ -9,7 +9,7 @@ import { useStore, filterDuplicateResumes } from '@/lib/store'
 import { detectKind, extractText } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
-import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, type LlmConfig } from '@/lib/llm'
+import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
 import { maskIdCard } from '@/lib/regions'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -178,6 +178,22 @@ export default function AiParse() {
     toast.success(draftConfig.enabled ? 'AI 增强解析已启用' : '已保存，当前使用本地智能引擎')
   }
 
+  /** 选择服务商预设：自动填端点与推荐模型，模型仍可手填覆盖 */
+  function applyPreset(id: string) {
+    const preset = LLM_PROVIDER_PRESETS.find((p) => p.id === id)
+    if (!preset || preset.id === 'custom') return
+    setDraftConfig({
+      ...draftConfig,
+      baseUrl: preset.baseUrl,
+      model: preset.model,
+      visionModel: preset.visionModel,
+      // 无视觉能力的服务商自动关闭视觉识别，扫描件走本地 OCR
+      visionEnabled: preset.hasVision ? draftConfig.visionEnabled : false,
+    })
+  }
+
+  const activePreset = matchProviderPreset(draftConfig.baseUrl)
+
   return (
     <div className="space-y-6 p-8">
       <div className="flex items-center justify-between">
@@ -215,6 +231,22 @@ export default function AiParse() {
                   />
                 </div>
                 <div className="space-y-1.5">
+                  <Label>服务商</Label>
+                  <Select value={activePreset?.id ?? 'custom'} onValueChange={applyPreset}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择服务商，自动填端点与模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {LLM_PROVIDER_PRESETS.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {activePreset?.note && (
+                    <p className="text-xs leading-relaxed text-slate-400">{activePreset.note}</p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
                   <Label>接口地址（Base URL）</Label>
                   <Input
                     value={draftConfig.baseUrl}
@@ -242,11 +274,16 @@ export default function AiParse() {
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
                     <Label htmlFor="vision-enabled" className="cursor-pointer">扫描件使用 AI 视觉识别</Label>
-                    <p className="mt-0.5 text-xs text-slate-400">识别精度显著高于本地 OCR，适合模糊/复杂版式扫描件</p>
+                    <p className="mt-0.5 text-xs text-slate-400">
+                      {activePreset && !activePreset.hasVision
+                        ? '当前服务商无视觉模型，扫描件将使用本地 Tesseract OCR'
+                        : '识别精度显著高于本地 OCR，适合模糊/复杂版式扫描件'}
+                    </p>
                   </div>
                   <Switch
                     id="vision-enabled"
                     checked={draftConfig.visionEnabled}
+                    disabled={activePreset ? !activePreset.hasVision : false}
                     onCheckedChange={(v) => setDraftConfig({ ...draftConfig, visionEnabled: v })}
                   />
                 </div>
@@ -261,6 +298,9 @@ export default function AiParse() {
                   </div>
                 )}
                 <Button className="w-full" onClick={saveSettings}>保存设置</Button>
+                <p className="text-xs leading-relaxed text-slate-400">
+                  以上均为官方接口，非中转站；未配置时系统自动使用本地规则解析 + Tesseract OCR，无需任何费用
+                </p>
               </div>
             </DialogContent>
           </Dialog>

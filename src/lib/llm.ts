@@ -16,6 +16,79 @@ const CONFIG_KEY = 'hireflow-llm-config'
 
 const DEFAULT_CONFIG: LlmConfig = { enabled: false, baseUrl: '', apiKey: '', model: '', visionEnabled: false, visionModel: '' }
 
+/** 官方服务商预设：选择后自动填端点与推荐模型，用户只需填 API Key（均为官方接口，非中转站） */
+export interface LlmProviderPreset {
+  id: string
+  name: string
+  baseUrl: string
+  model: string
+  visionModel: string
+  /** 该服务商是否提供视觉模型（无视觉能力时扫描件走本地 Tesseract OCR） */
+  hasVision: boolean
+  /** 展示在配置表单中的说明文案 */
+  note?: string
+}
+
+export const LLM_PROVIDER_PRESETS: LlmProviderPreset[] = [
+  {
+    id: 'volcengine',
+    name: '火山方舟（豆包）· 推荐',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: 'doubao-1.5-pro-32k',
+    visionModel: 'doubao-1.5-vision-pro-32k',
+    hasVision: true,
+    note: '字节跳动官方平台，每模型 50 万 tokens 免费额度，console.volcengine.com 实名认证后创建 API Key',
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-chat',
+    visionModel: '',
+    hasVision: false,
+    note: 'DeepSeek 暂无视觉模型，扫描件将自动使用本地 Tesseract OCR（免费）',
+  },
+  {
+    id: 'qwen',
+    name: '通义千问',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+    visionModel: 'qwen-vl-max',
+    hasVision: true,
+  },
+  {
+    id: 'moonshot',
+    name: 'Kimi（Moonshot）',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    model: 'moonshot-v1-8k',
+    visionModel: 'moonshot-v1-8k-vision-preview',
+    hasVision: true,
+  },
+  {
+    id: 'zhipu',
+    name: '智谱',
+    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4-flash',
+    visionModel: 'glm-4v',
+    hasVision: true,
+  },
+  {
+    id: 'custom',
+    name: '自定义 OpenAI 兼容',
+    baseUrl: '',
+    model: '',
+    visionModel: '',
+    hasVision: true,
+  },
+]
+
+/** 根据接口地址匹配预设服务商（未匹配返回 undefined，即自定义） */
+export function matchProviderPreset(baseUrl: string): LlmProviderPreset | undefined {
+  const normalized = baseUrl.replace(/\/+$/, '')
+  if (!normalized) return undefined
+  return LLM_PROVIDER_PRESETS.find((p) => p.id !== 'custom' && p.baseUrl === normalized)
+}
+
 export function getLlmConfig(): LlmConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY)

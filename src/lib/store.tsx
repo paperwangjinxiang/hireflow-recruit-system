@@ -64,6 +64,23 @@ const STORAGE_KEY = 'hireflow-state-v2'
 /** 同步游标持久化：防止刷新后未推送的本地修改被云端旧数据覆盖 */
 const DIRTY_KEY = 'hireflow-sync-dirty'
 const REMOTE_TS_KEY = 'hireflow-sync-remote-ts'
+/** 简历字符串字段入库长度上限（防御：图片 dataURL 等超长内容不写入 localStorage，避免配额溢出） */
+const MAX_RESUME_FIELD_LEN = 50000
+
+/** 持久化前防御：任何简历字符串字段超过上限时截断（图片 base64 等不应入库的内容一并兜底） */
+function sanitizeResumesForPersist(resumes: Resume[]): Resume[] {
+  return resumes.map((r) => {
+    let changed = false
+    const out = { ...r } as Record<string, unknown>
+    for (const [key, value] of Object.entries(out)) {
+      if (typeof value === 'string' && value.length > MAX_RESUME_FIELD_LEN) {
+        out[key] = value.slice(0, MAX_RESUME_FIELD_LEN)
+        changed = true
+      }
+    }
+    return changed ? (out as unknown as Resume) : r
+  })
+}
 
 /** 按手机号/邮箱过滤与库中已有简历重复的导入项（同时去除导入批次内部重复） */
 export function filterDuplicateResumes<T extends { phone?: string; email?: string }>(
@@ -407,7 +424,8 @@ interface StoreValue extends State {
   dispatch: React.Dispatch<Action>
   syncStatus: SyncStatus
   lastSyncAt: number | null
-  syncNow: () => Promise<void>
+  /** 手动触发一次同步，返回本次是否成功 */
+  syncNow: () => Promise<boolean>
   syncUrl: string
   setCustomSyncUrl: (url: string) => void
 }
@@ -418,7 +436,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, baseDispatch] = useReducer(reducer, undefined, init)
 
   // ---- 云端同步 ----
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
+  const [syncStatus, setSyncStatusState] = useState<SyncStatus>('idle')
+  // 同步状态的 ref 镜像：syncNow 需要同步读取本次操作结果（state 更新是异步的）
+  const syncStatusRef = useRef<SyncStatus>('idle')
+  const setSyncStatus = useMemo(
+    () => (s: SyncStatus | ((prev: SyncStatus) => SyncStatus)) => {
+      setSyncStatusState((prev) => {
+        const next = typeof s === 'function' ? s(prev) : s
+        syncStatusRef.current = next
+        return next
+      })
+    },
+    [],
+  )
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [syncUrl, setSyncUrlState] = useState(getSyncUrl)
   const clientIdRef = useRef(getClientId())
@@ -468,7 +498,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setSyncStatus('error')
       }
     },
-    [],
+    [setSyncStatus],
   )
 
   const doPull = useMemo(
@@ -503,13 +533,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
       setSyncStatus((s) => (s === 'syncing' ? s : 'ok'))
     },
-    [doPush],
+    [doPush, setSyncStatus],
   )
 
-  // 本地变更后 1 秒防抖推送
+    // 本地变更后 1 秒防抖推送
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, resumes: sanitizeResumesForPersist(state.resumes) }))
     } catch {
       // 存储配额满等异常不阻断使用（云端同步仍可进行）
     }
@@ -537,9 +567,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [doPull])
 
   const syncNow = useMemo(
-    () => async () => {
+    () => async (): Promise<boolean> => {
       if (dirtyRef.current) await doPush()
       await doPull()
+      return syncStatusRef.current === 'ok'
     },
     [doPush, doPull],
   )

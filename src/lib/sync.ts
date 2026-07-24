@@ -97,19 +97,20 @@ export function getClientId(): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-/** 带退避重试的 fetch：遇到 429 限流时按 3s / 8s / 15s 退避重试，其余错误直接放弃 */
+/** 带指数退避重试的 fetch：429 限流 / 5xx 服务端错误 / 网络错误按 1s / 3s / 9s 退避，最多重试 3 次 */
 async function fetchWithRetry(input: string, init: RequestInit, retries = 3): Promise<Response | null> {
+  const backoff = [1000, 3000, 9000]
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const resp = await fetch(input, { ...init, signal: AbortSignal.timeout(15000) })
-      if (resp.status === 429 && attempt < retries) {
-        await sleep(attempt === 0 ? 3000 : attempt === 1 ? 8000 : 15000)
+      if ((resp.status === 429 || resp.status >= 500) && attempt < retries) {
+        await sleep(backoff[Math.min(attempt, backoff.length - 1)])
         continue
       }
       return resp
     } catch {
       if (attempt < retries) {
-        await sleep(2000)
+        await sleep(backoff[Math.min(attempt, backoff.length - 1)])
         continue
       }
       return null
