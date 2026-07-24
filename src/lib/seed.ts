@@ -98,6 +98,7 @@ export function seedResumes(): Resume[] {
       age: t.age,
       certStage: t.certStage,
       certSubject: t.subject,
+      certQualified: false,
       gradYear: t.gradYear,
       hometown: t.hometown,
       fullTime: t.fullTime,

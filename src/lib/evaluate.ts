@@ -79,6 +79,9 @@ function evalEducation(resume: Resume): EvalDimension {
 
 function evalCert(resume: Resume, job?: Job | null): EvalDimension {
   if (!resume.certStage) {
+    if (resume.certQualified) {
+      return { key: 'cert', label: '教师资格证', score: 80, weight: 20, reason: '持教师资格考试合格证明（按有证 80% 计），入职前需完成认定' }
+    }
     return { key: 'cert', label: '教师资格证', score: 0, weight: 20, reason: '未取得教师资格证' }
   }
   const label = `${resume.certStage}${resume.certSubject ? resume.certSubject : ''}教师资格证`
@@ -179,7 +182,11 @@ function buildAlerts(resume: Resume, job?: Job | null): EvalAlert[] {
     alerts.push({ level: 'warning', text: '非全日制学历，部分公办学校编制岗位可能受限' })
   }
   if (!resume.certStage) {
-    alerts.push({ level: 'danger', text: '未取得教师资格证，无法办理正式教师岗位入职' })
+    if (resume.certQualified) {
+      alerts.push({ level: 'info', text: '持有教师资格考试合格证明，入职前需完成教师资格认定' })
+    } else {
+      alerts.push({ level: 'danger', text: '未取得教师资格证，无法办理正式教师岗位入职' })
+    }
   }
   if (job && resume.certStage) {
     const certRank = LEVEL_RANK[resume.certStage] ?? 0

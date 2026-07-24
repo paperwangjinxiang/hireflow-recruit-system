@@ -2,26 +2,34 @@ import { useState } from 'react'
 import { format } from 'date-fns'
 import { useStore } from '@/lib/store'
 import {
-  STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, SCHOOL_LEVELS,
-  type Resume, type Stage, type SchoolLevel,
+  STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, SCHOOL_LEVELS, CERT_STAGES, TEACHER_SUBJECTS,
+  type Resume, type Stage, type SchoolLevel, type CertStage, type FullTime,
 } from '@/types'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Progress } from '@/components/ui/progress'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Mail, Phone, Briefcase, GraduationCap, Clock, Tag, Star, Building2, School,
   Award, MapPin, CalendarDays, BookOpen, Lock, Unlock, BedDouble, IdCard,
-  Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList,
+  Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList, Pencil, ShieldAlert,
 } from 'lucide-react'
 import { tagColor } from '@/lib/tags'
-import { scoreColor, scoreLabel } from '@/lib/match'
+import { scoreColor, scoreLabel, checkCertFit } from '@/lib/match'
 import { evaluateResume, GRADE_COLORS, GRADE_LABELS, type EvalAlert } from '@/lib/evaluate'
 import { regionFromIdCard, genderFromIdCard, birthFromIdCard, maskIdCard, isValidIdCard } from '@/lib/regions'
 import InterviewSection from './InterviewSection'
@@ -46,6 +54,47 @@ function parseWpsNote(content: string): { key: string; value: string }[] {
     })
 }
 
+/** 资料编辑表单：数值字段用字符串承载，保存时转换 */
+interface EditForm {
+  phone: string
+  email: string
+  position: string
+  education: string
+  fullTime: FullTime
+  age: string
+  gradYear: string
+  hometown: string
+  university: string
+  major: string
+  experience: string
+  company: string
+  certStage: CertStage | 'none'
+  certSubject: string
+  certQualified: boolean
+}
+
+function toEditForm(r: Resume): EditForm {
+  return {
+    phone: r.phone,
+    email: r.email,
+    position: r.position,
+    education: r.education,
+    fullTime: r.fullTime,
+    age: r.age > 0 ? String(r.age) : '',
+    gradYear: r.gradYear > 0 ? String(r.gradYear) : '',
+    hometown: r.hometown,
+    university: r.university,
+    major: r.major,
+    experience: r.experience > 0 ? String(r.experience) : '',
+    company: r.company,
+    certStage: r.certStage || 'none',
+    certSubject: r.certSubject,
+    certQualified: r.certQualified,
+  }
+}
+
+const EDUCATION_OPTIONS = ['博士', '硕士', '本科', '大专', '高中', '未知']
+
 export default function ResumeDetail({
   resume,
   open,
@@ -59,6 +108,10 @@ export default function ResumeDetail({
   const [note, setNote] = useState('')
   const [matchLevel, setMatchLevel] = useState<SchoolLevel | 'all'>('all')
   const [matchJobId, setMatchJobId] = useState('')
+  const [editOpen, setEditOpen] = useState(false)
+  const [form, setForm] = useState<EditForm | null>(null)
+  // 教资硬约束确认弹窗：warn/block 时挂起待锁定的职位
+  const [certCheck, setCertCheck] = useState<{ jobId: string; level: 'warn' | 'block'; messages: string[] } | null>(null)
 
   if (!resume) return null
   const assignee = users.find((u) => u.id === resume.assigneeId)
@@ -69,6 +122,59 @@ export default function ResumeDetail({
 
   const openJobs = jobs.filter((j) => j.status === 'open' && (matchLevel === 'all' || j.level === matchLevel))
   const canMatch = !resume.jobId && (resume.stage === 'imported' || resume.stage === 'screening')
+
+  /** 教资硬约束检查后的锁定入口：ok 直接锁定，warn/block 先弹确认 */
+  const tryMatchJob = (jobId: string) => {
+    const job = jobs.find((j) => j.id === jobId)
+    if (!job) return
+    const fit = checkCertFit(resume, job)
+    if (fit.level === 'ok') {
+      doMatchJob(jobId)
+    } else {
+      setCertCheck({ jobId, level: fit.level, messages: fit.messages })
+    }
+  }
+
+  const doMatchJob = (jobId: string) => {
+    dispatch({ type: 'matchJob', resumeId: resume.id, jobId, actorId: currentUser.id })
+    toast.success('已匹配并锁定该岗位')
+    setMatchJobId('')
+    setCertCheck(null)
+  }
+
+  const openEdit = () => {
+    setForm(toEditForm(resume))
+    setEditOpen(true)
+  }
+
+  const saveEdit = () => {
+    if (!form) return
+    const certStage = form.certStage === 'none' ? '' : form.certStage
+    dispatch({
+      type: 'updateResumeFields',
+      id: resume.id,
+      actorId: currentUser.id,
+      fields: {
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        position: form.position.trim(),
+        education: form.education,
+        fullTime: form.fullTime,
+        age: Math.max(0, parseInt(form.age, 10) || 0),
+        gradYear: Math.max(0, parseInt(form.gradYear, 10) || 0),
+        hometown: form.hometown.trim(),
+        university: form.university.trim(),
+        major: form.major.trim(),
+        experience: Math.max(0, parseInt(form.experience, 10) || 0),
+        company: form.company.trim(),
+        certStage,
+        certSubject: certStage ? form.certSubject : '',
+        certQualified: form.certQualified,
+      },
+    })
+    setEditOpen(false)
+    toast.success('资料已更新')
+  }
 
   // 综合评估：锁定岗位后按岗位评估
   const evaluation = evaluateResume(resume, lockedJob ?? null)
@@ -123,6 +229,11 @@ export default function ResumeDetail({
         <ScrollArea className="h-[calc(100vh-6rem)] pr-4">
           <div className="mt-4 space-y-6">
             {/* 教师档案 */}
+            <div className="flex justify-end">
+              <Button size="sm" variant="outline" onClick={openEdit}>
+                <Pencil className="mr-1.5 h-3.5 w-3.5" />编辑资料
+              </Button>
+            </div>
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-slate-400" />{resume.phone || '—'}</div>
               <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-slate-400" />{resume.email || '—'}</div>
@@ -137,7 +248,11 @@ export default function ResumeDetail({
               <div className="flex items-center gap-2 text-slate-600"><BookOpen className="h-4 w-4 text-slate-400" />{resume.major || '专业未知'}</div>
               <div className="flex items-center gap-2 text-slate-600">
                 <Award className="h-4 w-4 text-slate-400" />
-                {resume.certStage ? `${resume.certStage}${resume.certSubject}教师资格证` : '暂无教师资格证'}
+                {resume.certStage
+                  ? `${resume.certStage}${resume.certSubject}教师资格证`
+                  : resume.certQualified
+                    ? '持教师资格考试合格证明（待认定）'
+                    : '暂无教师资格证'}
               </div>
               {resume.company && (
                 <div className="flex items-center gap-2 text-slate-600"><Building2 className="h-4 w-4 text-slate-400" />最近任职：{resume.company}</div>
@@ -312,20 +427,21 @@ export default function ResumeDetail({
                     <Select value={matchJobId} onValueChange={setMatchJobId}>
                       <SelectTrigger><SelectValue placeholder="选择职位" /></SelectTrigger>
                       <SelectContent>
-                        {openJobs.map((j) => (
-                          <SelectItem key={j.id} value={j.id}>{j.school} · {j.level}{j.subject}（{j.region}）</SelectItem>
-                        ))}
+                        {openJobs.map((j) => {
+                          const blocked = checkCertFit(resume, j).level === 'block'
+                          return (
+                            <SelectItem key={j.id} value={j.id}>
+                              {j.school} · {j.level}{j.subject}（{j.region}）{blocked ? ' ⚠ 学段不符' : ''}
+                            </SelectItem>
+                          )
+                        })}
                       </SelectContent>
                     </Select>
                   </div>
                   <Button
                     size="sm"
                     disabled={!matchJobId}
-                    onClick={() => {
-                      dispatch({ type: 'matchJob', resumeId: resume.id, jobId: matchJobId, actorId: currentUser.id })
-                      toast.success('已匹配并锁定该岗位')
-                      setMatchJobId('')
-                    }}
+                    onClick={() => tryMatchJob(matchJobId)}
                   >
                     <Lock className="mr-1.5 h-3.5 w-3.5" />匹配并锁定
                   </Button>
@@ -512,6 +628,147 @@ export default function ResumeDetail({
           </div>
         </ScrollArea>
       </SheetContent>
+
+      {/* 教资硬约束确认弹窗 */}
+      <AlertDialog open={!!certCheck} onOpenChange={(o) => !o && setCertCheck(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className={`flex items-center gap-2 ${certCheck?.level === 'block' ? 'text-rose-600' : 'text-amber-600'}`}>
+              {certCheck?.level === 'block' ? <ShieldAlert className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+              {certCheck?.level === 'block' ? '教资学段不满足岗位要求' : '教资信息确认'}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <ul className={`space-y-1.5 rounded-md border p-3 text-sm ${certCheck?.level === 'block' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                {certCheck?.messages.map((m, i) => <li key={i}>· {m}</li>)}
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            {certCheck?.level === 'warn' && (
+              <AlertDialogAction onClick={() => certCheck && doMatchJob(certCheck.jobId)}>
+                确认锁定
+              </AlertDialogAction>
+            )}
+            {certCheck?.level === 'block' && currentUser.role === 'admin' && (
+              <AlertDialogAction
+                className="bg-rose-600 hover:bg-rose-700"
+                onClick={() => certCheck && doMatchJob(certCheck.jobId)}
+              >
+                强制锁定（管理员）
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 资料编辑弹窗 */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>编辑资料 · {resume.name}</DialogTitle></DialogHeader>
+          {form && (
+            <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>手机号</Label>
+                  <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>邮箱</Label>
+                  <Input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>应聘岗位</Label>
+                  <Input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>最近任职单位</Label>
+                  <Input value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>学历</Label>
+                  <Select value={form.education} onValueChange={(v) => setForm({ ...form, education: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {EDUCATION_OPTIONS.map((e) => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>是否全日制</Label>
+                  <Select value={form.fullTime} onValueChange={(v) => setForm({ ...form, fullTime: v as FullTime })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="全日制">全日制</SelectItem>
+                      <SelectItem value="非全日制">非全日制</SelectItem>
+                      <SelectItem value="未知">未知</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>年龄</Label>
+                  <Input type="number" min={0} value={form.age} onChange={(e) => setForm({ ...form, age: e.target.value })} placeholder="未知留空" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>毕业年份</Label>
+                  <Input type="number" min={0} value={form.gradYear} onChange={(e) => setForm({ ...form, gradYear: e.target.value })} placeholder="未知留空" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>籍贯</Label>
+                  <Input value={form.hometown} onChange={(e) => setForm({ ...form, hometown: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>工作年限</Label>
+                  <Input type="number" min={0} value={form.experience} onChange={(e) => setForm({ ...form, experience: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>毕业院校</Label>
+                  <Input value={form.university} onChange={(e) => setForm({ ...form, university: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>专业</Label>
+                  <Input value={form.major} onChange={(e) => setForm({ ...form, major: e.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>教资学段</Label>
+                  <Select value={form.certStage} onValueChange={(v) => setForm({ ...form, certStage: v as CertStage | 'none' })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">未取得证书</SelectItem>
+                      {CERT_STAGES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>教资科目</Label>
+                  <Select
+                    value={form.certSubject || 'none'}
+                    disabled={form.certStage === 'none'}
+                    onValueChange={(v) => setForm({ ...form, certSubject: v === 'none' ? '' : v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">未填写</SelectItem>
+                      {TEACHER_SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <Checkbox
+                  checked={form.certQualified}
+                  onCheckedChange={(c) => setForm({ ...form, certQualified: !!c })}
+                />
+                持有教师资格考试合格证明（未取得证书）
+              </label>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>取消</Button>
+            <Button onClick={saveEdit}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Sheet>
   )
 }

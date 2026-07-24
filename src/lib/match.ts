@@ -8,13 +8,39 @@ export interface MatchResult {
 }
 
 /** 学段层级：高学段教师资格证可向下覆盖低学段教学 */
-const LEVEL_RANK: Record<string, number> = { 幼儿园: 1, 小学: 2, 初中: 3, 高中: 4 }
+export const LEVEL_RANK: Record<string, number> = { 幼儿园: 1, 小学: 2, 初中: 3, 高中: 4 }
+
+/** 教资硬约束检查：证书学段等级 >= 岗位学段等级才合格（高学段证可教低学段） */
+export interface CertFitResult {
+  level: 'ok' | 'warn' | 'block'
+  messages: string[]
+}
+
+export function checkCertFit(resume: Resume, job: Job): CertFitResult {
+  const certRank = LEVEL_RANK[resume.certStage] ?? 0
+  const jobRank = LEVEL_RANK[job.level] ?? 0
+  if (!resume.certStage) {
+    if (resume.certQualified) {
+      return { level: 'warn', messages: ['仅有教师资格考试合格证明，入职前需完成认定'] }
+    }
+    return { level: 'warn', messages: ['暂无教师资格证信息，请确认是否持有证书或合格证明'] }
+  }
+  if (certRank < jobRank) {
+    return { level: 'block', messages: [`${resume.certStage}教师资格证不满足${job.level}学段要求`] }
+  }
+  const messages: string[] = []
+  if (resume.certSubject && job.subject && resume.certSubject !== job.subject) {
+    messages.push(`教资科目（${resume.certSubject}）与岗位学科（${job.subject}）不一致`)
+  }
+  return messages.length > 0 ? { level: 'warn', messages } : { level: 'ok', messages: [] }
+}
 
 export function computeMatchScore(resume: Resume, job: Job): MatchResult {
   let score = 0
   const reasons: string[] = []
 
   // 1. 学段匹配（40 分）：同学段满分；高学段证教低学段 28 分；无证 0 分
+  //    仅有合格证明（未取得证书）时按有证的 80% 计分
   const certRank = LEVEL_RANK[resume.certStage] ?? 0
   const jobRank = LEVEL_RANK[job.level] ?? 0
   if (certRank > 0 && certRank === jobRank) {
@@ -25,6 +51,9 @@ export function computeMatchScore(resume: Resume, job: Job): MatchResult {
     reasons.push(`${resume.certStage}教资可覆盖${job.level} +28`)
   } else if (certRank > 0) {
     reasons.push(`教资学段（${resume.certStage}）低于岗位学段 +0`)
+  } else if (resume.certQualified) {
+    score += 32
+    reasons.push('仅持教师资格考试合格证明（按有证 80% 计）+32')
   } else {
     reasons.push('无教师资格证 +0')
   }

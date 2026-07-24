@@ -5,8 +5,15 @@ import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { MessageSquare, Lock, Star } from 'lucide-react'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { tagColor } from '@/lib/tags'
 import { cn } from '@/lib/utils'
+
+/** 进行中：主流水线阶段；历史档案：终态阶段 */
+const ACTIVE_STAGES: Stage[] = ['imported', 'screening', 'matched', 'interview', 'offered', 'onboarded']
+const HISTORY_STAGES: Stage[] = ['rejected', 'offboarded', 'blacklisted']
+
+type KanbanView = 'active' | 'history' | 'all'
 
 /** 简历看板：按招聘流程分列（导入→筛选→匹配→面试→录用→不通过→入职→离职→黑名单），拖拽卡片流转阶段 */
 export default function ResumesKanban({
@@ -19,6 +26,10 @@ export default function ResumesKanban({
   const { users, jobs, currentUser, dispatch } = useStore()
   const [dragOverStage, setDragOverStage] = useState<Stage | null>(null)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [view, setView] = useState<KanbanView>('active')
+
+  const visibleStages: Stage[] =
+    view === 'active' ? ACTIVE_STAGES : view === 'history' ? HISTORY_STAGES : STAGE_ORDER
 
   const byStage = (stage: Stage) => resumes.filter((r) => r.stage === stage)
 
@@ -37,8 +48,19 @@ export default function ResumesKanban({
   }
 
   return (
-    <div className="flex gap-3 overflow-x-auto pb-3">
-      {STAGE_ORDER.map((stage) => {
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <ToggleGroup type="single" value={view} onValueChange={(v) => v && setView(v as KanbanView)} variant="outline">
+          <ToggleGroupItem value="active" className="px-4">进行中</ToggleGroupItem>
+          <ToggleGroupItem value="history" className="px-4">历史档案</ToggleGroupItem>
+          <ToggleGroupItem value="all" className="px-4">全部</ToggleGroupItem>
+        </ToggleGroup>
+        <span className="text-xs text-slate-400">
+          {view === 'active' ? '导入 → 筛选 → 匹配 → 面试 → 录用 → 入职' : view === 'history' ? '面试不通过 / 已离职 / 黑名单' : '全部九个阶段'}
+        </span>
+      </div>
+      <div className="flex gap-3 overflow-x-auto pb-3">
+      {visibleStages.map((stage) => {
         const list = byStage(stage)
         const isOver = dragOverStage === stage
         return (
@@ -150,6 +172,7 @@ export default function ResumesKanban({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }

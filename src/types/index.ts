@@ -64,6 +64,7 @@ export interface Resume {
   age: number // 年龄，0 = 未知
   certStage: CertStage // 教师资格证学段
   certSubject: string // 教师资格证科目（语文/数学/英语…）
+  certQualified: boolean // 持有教师资格考试合格证明（未取得证书）
   gradYear: number // 毕业年份，0 = 未知
   hometown: string // 籍贯
   fullTime: FullTime // 是否全日制

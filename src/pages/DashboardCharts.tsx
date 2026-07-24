@@ -4,13 +4,14 @@ import {
   BarChart, Bar, LabelList,
 } from 'recharts'
 import { useStore } from '@/lib/store'
+import type { Resume } from '@/types'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 const DAY = 24 * 60 * 60 * 1000
 
-/** 仪表盘数据图表：导入趋势、职位分布、成员处理量 */
-export default function DashboardCharts() {
-  const { resumes, users } = useStore()
+/** 仪表盘数据图表：导入趋势、职位分布、成员处理量（基于筛选后的简历子集） */
+export default function DashboardCharts({ resumes }: { resumes: Resume[] }) {
+  const { users } = useStore()
 
   // 近 30 天导入趋势
   const trend = useMemo(() => {

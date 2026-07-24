@@ -1,15 +1,24 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { Contact, FileUp, UserCheck, Clock, TrendingUp, BellRing, CalendarClock, Copy, Timer, UserX, MessageSquareWarning, Lock } from 'lucide-react'
+import { Contact, FileUp, UserCheck, Clock, TrendingUp, BellRing, CalendarClock, Copy, Timer, UserX, MessageSquareWarning, Lock, Filter, RefreshCw } from 'lucide-react'
 import { format, startOfToday, endOfWeek } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import { useStore } from '@/lib/store'
 import { computeReminders, LEVEL_STYLES, type Reminder } from '@/lib/reminders'
-import { STAGE_LABELS, STAGE_COLORS, RESULT_LABELS, RESULT_COLORS, FUNNEL_STAGES, TERMINAL_STAGES } from '@/types'
+import { STAGE_LABELS, STAGE_COLORS, RESULT_LABELS, RESULT_COLORS, FUNNEL_STAGES, TERMINAL_STAGES, TEACHER_SUBJECTS } from '@/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import DashboardCharts from './DashboardCharts'
+
+const DAY = 24 * 60 * 60 * 1000
+const TIME_RANGES = [
+  { value: '7', label: '近7天' },
+  { value: '30', label: '近30天' },
+  { value: '90', label: '近90天' },
+  { value: 'all', label: '全部时间' },
+] as const
 
 const REMINDER_ICONS = {
   interview: CalendarClock,
@@ -21,8 +30,43 @@ const REMINDER_ICONS = {
 } as const
 
 export default function Dashboard() {
-  const { resumes, users, interviews, currentUser } = useStore()
+  const { resumes, users, interviews, jobs, currentUser } = useStore()
   const navigate = useNavigate()
+
+  // ---- 筛选条 ----
+  const [timeRange, setTimeRange] = useState<string>('all')
+  const [regionFilter, setRegionFilter] = useState<string>('all')
+  const [schoolFilter, setSchoolFilter] = useState<string>('all')
+  const [subjectFilter, setSubjectFilter] = useState<string>('all')
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('all')
+
+  const regions = useMemo(() => [...new Set(jobs.map((j) => j.region).filter(Boolean))].sort(), [jobs])
+  const schools = useMemo(() => [...new Set(jobs.map((j) => j.school).filter(Boolean))].sort(), [jobs])
+
+  /** 筛选后的简历子集：时间按 createdAt；片区/学校/学科按锁定岗位匹配（未锁定简历在这三项被选时排除）；负责人按 assigneeId */
+  const [now] = useState(() => Date.now())
+  const filteredResumes = useMemo(() => {
+    const since = timeRange === 'all' ? 0 : now - Number(timeRange) * DAY
+    const jobById = new Map(jobs.map((j) => [j.id, j]))
+    return resumes.filter((r) => {
+      if (since > 0 && r.createdAt < since) return false
+      const needJob = regionFilter !== 'all' || schoolFilter !== 'all' || subjectFilter !== 'all'
+      if (needJob) {
+        const job = r.jobId ? jobById.get(r.jobId) : undefined
+        if (!job) return false
+        if (regionFilter !== 'all' && job.region !== regionFilter) return false
+        if (schoolFilter !== 'all' && job.school !== schoolFilter) return false
+        if (subjectFilter !== 'all' && job.subject !== subjectFilter) return false
+      }
+      if (assigneeFilter !== 'all' && r.assigneeId !== assigneeFilter) return false
+      return true
+    })
+  }, [resumes, jobs, timeRange, regionFilter, schoolFilter, subjectFilter, assigneeFilter, now])
+
+  const filterActive = timeRange !== 'all' || regionFilter !== 'all' || schoolFilter !== 'all' || subjectFilter !== 'all' || assigneeFilter !== 'all'
+  const resetFilters = () => {
+    setTimeRange('all'); setRegionFilter('all'); setSchoolFilter('all'); setSubjectFilter('all'); setAssigneeFilter('all')
+  }
 
   const reminders = useMemo(() => computeReminders(resumes, interviews), [resumes, interviews])
 
@@ -35,14 +79,14 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const byStage = Object.fromEntries([...FUNNEL_STAGES, ...TERMINAL_STAGES].map((s) => [s, 0])) as Record<string, number>
-    resumes.forEach((r) => { byStage[r.stage] = (byStage[r.stage] ?? 0) + 1 })
+    filteredResumes.forEach((r) => { byStage[r.stage] = (byStage[r.stage] ?? 0) + 1 })
     const week = Date.now() - 7 * 24 * 60 * 60 * 1000
-    const newThisWeek = resumes.filter((r) => r.createdAt >= week).length
+    const newThisWeek = filteredResumes.filter((r) => r.createdAt >= week).length
     const isActive = (s: string) => !TERMINAL_STAGES.includes(s as (typeof TERMINAL_STAGES)[number])
-    const assignedToMe = resumes.filter((r) => r.assigneeId === currentUser.id && isActive(r.stage)).length
-    const active = resumes.filter((r) => isActive(r.stage)).length
+    const assignedToMe = filteredResumes.filter((r) => r.assigneeId === currentUser.id && isActive(r.stage)).length
+    const active = filteredResumes.filter((r) => isActive(r.stage)).length
     return { byStage, newThisWeek, assignedToMe, active }
-  }, [resumes, currentUser.id])
+  }, [filteredResumes, currentUser.id])
 
   const recentActivities = useMemo(() => {
     return resumes
@@ -84,13 +128,62 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* 筛选条：作用于统计卡片与图表 */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-3 py-3">
+          <span className="flex items-center gap-1.5 text-sm font-medium text-slate-500"><Filter className="h-4 w-4" />筛选</span>
+          <Select value={timeRange} onValueChange={setTimeRange}>
+            <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {TIME_RANGES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={regionFilter} onValueChange={setRegionFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder="片区" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部片区</SelectItem>
+              {regions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={schoolFilter} onValueChange={setSchoolFilter}>
+            <SelectTrigger className="w-40"><SelectValue placeholder="学校" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部学校</SelectItem>
+              {schools.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={subjectFilter} onValueChange={setSubjectFilter}>
+            <SelectTrigger className="w-32"><SelectValue placeholder="学科" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部学科</SelectItem>
+              {TEACHER_SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+            <SelectTrigger className="w-32"><SelectValue placeholder="负责人" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部负责人</SelectItem>
+              {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {filterActive && (
+            <>
+              <Badge variant="secondary" className="bg-indigo-50 text-indigo-700">命中 {filteredResumes.length} 份</Badge>
+              <Button variant="ghost" size="sm" onClick={resetFilters}>
+                <RefreshCw className="mr-1 h-3.5 w-3.5" />重置
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-slate-500">简历总数</CardTitle>
             <Contact className="h-4 w-4 text-slate-400" />
           </CardHeader>
-          <CardContent><div className="text-3xl font-bold">{resumes.length}</div></CardContent>
+          <CardContent><div className="text-3xl font-bold">{filteredResumes.length}</div></CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -148,7 +241,7 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <DashboardCharts />
+      <DashboardCharts resumes={filteredResumes} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-3">
@@ -156,7 +249,7 @@ export default function Dashboard() {
           <CardContent className="space-y-3">
             {FUNNEL_STAGES.map((stage) => {
               const count = stats.byStage[stage]
-              const pct = resumes.length ? Math.round((count / resumes.length) * 100) : 0
+              const pct = filteredResumes.length ? Math.round((count / filteredResumes.length) * 100) : 0
               return (
                 <div key={stage} className="space-y-1">
                   <div className="flex items-center justify-between text-sm">

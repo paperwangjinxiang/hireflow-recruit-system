@@ -44,10 +44,14 @@ export default function Resumes() {
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase()
+    // 可调配口径：stage ∈ {imported, screening, rejected} 且未锁定岗位（jobId 为空），
+    // 明确排除 matched/interview/offered/onboarded/offboarded/blacklisted
+    const deployable = (r: Resume) =>
+      !r.jobId && (r.stage === 'imported' || r.stage === 'screening' || r.stage === 'rejected')
     return resumes.filter((r) => {
-      // 总简历库不显示已被锁定到岗位的简历（明确按阶段筛选时除外，便于从仪表盘下钻查看）；
+      // 总简历库只显示可调配简历（明确按阶段筛选时除外，便于从仪表盘下钻查看）；
       // 个人库只显示我锁定的简历
-      if (pool === 'pool' && r.jobId && stageFilter === 'all') return false
+      if (pool === 'pool' && stageFilter === 'all' && !deployable(r)) return false
       if (pool === 'mine' && !(r.jobId && r.lockedBy === currentUser.id)) return false
       if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, r.major, r.hometown, r.certSubject, r.certStage, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
       if (stageFilter !== 'all' && r.stage !== stageFilter) return false
@@ -94,7 +98,7 @@ export default function Resumes() {
           <h1 className="text-2xl font-bold">{pool === 'pool' ? '总简历库' : '我的简历库'}</h1>
           <p className="text-sm text-slate-500">
             {pool === 'pool'
-              ? `共 ${filtered.length} 份可调配简历（已锁定到岗位的简历在专员的个人库中）`
+              ? `共 ${filtered.length} 份可调配简历（未锁定的导入/筛选/面试不通过简历；已锁定简历在专员的个人库中）`
               : `我锁定的 ${filtered.length} 份简历，面试不通过或放弃入职释放后自动退回总库`}
             {selectedIds.length > 0 && `，已选 ${selectedIds.length} 份`}
           </p>

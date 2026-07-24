@@ -28,6 +28,7 @@ type Action =
   | { type: 'updateJob'; id: string; patch: Partial<Pick<Job, 'region' | 'school' | 'level' | 'subject' | 'dormitory' | 'headcount' | 'status' | 'note'>>; actorId: string }
   | { type: 'deleteJob'; id: string }
   | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string }
+  | { type: 'updateResumeFields'; id: string; fields: Partial<Resume>; actorId: string }
   | { type: 'releaseResumes'; ids: string[]; reason: string; toStage: Stage; actorId: string }
   | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[] }
   | { type: 'setRating'; id: string; rating: number }
@@ -38,7 +39,7 @@ export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 export type ImportableResume = Omit<
   Resume,
   'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'
-  | 'age' | 'certStage' | 'certSubject' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
+  | 'age' | 'certStage' | 'certSubject' | 'certQualified' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
   | 'idCard' | 'rawText'
 > & {
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
@@ -50,6 +51,7 @@ export type ImportableResume = Omit<
   age?: number
   certStage?: Resume['certStage']
   certSubject?: string
+  certQualified?: boolean
   gradYear?: number
   hometown?: string
   fullTime?: Resume['fullTime']
@@ -137,6 +139,7 @@ function reducer(state: State, action: Action): State {
           age: 0,
           certStage: '',
           certSubject: '',
+          certQualified: false,
           gradYear: 0,
           hometown: '',
           fullTime: '未知',
@@ -162,20 +165,27 @@ function reducer(state: State, action: Action): State {
       const idSet = new Set(action.ids)
       return {
         ...state,
-        resumes: state.resumes.map((r) =>
-          idSet.has(r.id)
-            ? {
-                ...r,
-                stage: action.stage,
-                // 进入终态（淘汰/黑名单/离职）时自动释放锁定
-                ...(action.stage === 'rejected' || action.stage === 'blacklisted' || action.stage === 'offboarded'
-                  ? { jobId: null, lockedBy: null, lockedAt: null }
-                  : {}),
-                updatedAt: now,
-                activities: [...r.activities, activity(action.actorId, `阶段变更为「${STAGE_LABELS[action.stage]}」`)],
-              }
-            : r,
-        ),
+        resumes: state.resumes.map((r) => {
+          if (!idSet.has(r.id)) return r
+          // 进入终态（淘汰/黑名单/离职）时自动释放锁定
+          const release = action.stage === 'rejected' || action.stage === 'blacklisted' || action.stage === 'offboarded'
+          const acts = [...r.activities, activity(action.actorId, `阶段变更为「${STAGE_LABELS[action.stage]}」`)]
+          if (release && r.jobId) {
+            acts.push(
+              activity(
+                action.actorId,
+                action.stage === 'rejected' ? '面试未通过，简历已释放回总库' : '释放岗位锁定，简历已释放回总库',
+              ),
+            )
+          }
+          return {
+            ...r,
+            stage: action.stage,
+            ...(release ? { jobId: null, lockedBy: null, lockedAt: null } : {}),
+            updatedAt: now,
+            activities: acts,
+          }
+        }),
       }
     }
     case 'assign': {
@@ -248,7 +258,7 @@ function reducer(state: State, action: Action): State {
                   stage: 'rejected' as Stage,
                   jobId: null, lockedBy: null, lockedAt: null,
                   updatedAt: now,
-                  activities: [...acts, activity(action.actorId, '面试未通过，释放岗位锁定')],
+                  activities: [...acts, activity(action.actorId, '面试未通过，简历已释放回总库')],
                 }
               }
               if (updated.result === 'declined') {
@@ -316,6 +326,25 @@ function reducer(state: State, action: Action): State {
                 lockedAt: now,
                 updatedAt: now,
                 activities: [...r.activities, activity(action.actorId, `匹配并锁定到「${jobLabel(job)}」`)],
+              }
+            : r,
+        ),
+      }
+    }
+    case 'updateResumeFields': {
+      return {
+        ...state,
+        resumes: state.resumes.map((r) =>
+          r.id === action.id
+            ? {
+                ...r,
+                ...action.fields,
+                // 保护不可手动覆盖的字段
+                id: r.id,
+                createdAt: r.createdAt,
+                notes: r.notes,
+                activities: [...r.activities, activity(action.actorId, '手动更新了资料')],
+                updatedAt: now,
               }
             : r,
         ),
