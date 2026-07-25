@@ -1,8 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
-import type { Activity, Interview, Job, Resume, Stage, User } from '@/types'
+import type { Activity, Interview, Job, Resume, Role, Stage, User, UserStatus } from '@/types'
 import { STAGE_LABELS, RESULT_LABELS } from '@/types'
 import { SEED_USERS, seedResumes, seedInterviews, seedJobs } from '@/lib/seed'
-import { normalizeResume } from '@/lib/tags'
+import { normalizeResume, normalizeUser } from '@/lib/tags'
 import { getClientId, getSyncUrl, pullRemote, pushRemote, setSyncUrl, type SharedState } from '@/lib/sync'
 
 interface State {
@@ -19,7 +19,13 @@ type Action =
   | { type: 'assign'; ids: string[]; assigneeId: string | null; actorId: string }
   | { type: 'addNote'; resumeId: string; authorId: string; content: string }
   | { type: 'deleteResumes'; ids: string[] }
-  | { type: 'addUser'; user: Omit<User, 'id'> }
+  | { type: 'register'; user: Omit<User, 'id' | 'createdAt'> }
+  | { type: 'approveUser'; userId: string; role?: Role }
+  | { type: 'rejectUser'; userId: string }
+  | { type: 'setUserStatus'; userId: string; status: UserStatus }
+  | { type: 'resetPassword'; userId: string; passwordHash: string; salt: string }
+  | { type: 'changePassword'; userId: string; passwordHash: string; salt: string }
+  | { type: 'setUserRole'; userId: string; role: Role }
   | { type: 'switchUser'; userId: string }
   | { type: 'addInterview'; interview: Omit<Interview, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location'>>; actorId: string }
@@ -131,6 +137,7 @@ function init(): State {
           ...parsed,
           interviews: parsed.interviews ?? [],
           jobs: parsed.jobs ?? [],
+          users: parsed.users.map(normalizeUser),
           resumes: parsed.resumes.map(normalizeResume),
         }
       }
@@ -386,8 +393,44 @@ function reducer(state: State, action: Action): State {
         ),
       }
     }
-    case 'addUser': {
-      return { ...state, users: [...state.users, { ...action.user, id: uid('u') }] }
+    case 'register': {
+      const user: User = { ...action.user, id: uid('u'), createdAt: now }
+      return { ...state, users: [...state.users, user] }
+    }
+    case 'approveUser': {
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.userId && u.status === 'pending'
+            ? { ...u, status: 'active' as UserStatus, ...(action.role ? { role: action.role } : {}) }
+            : u,
+        ),
+      }
+    }
+    case 'rejectUser': {
+      // 拒绝 = 删除待审批账号
+      return { ...state, users: state.users.filter((u) => !(u.id === action.userId && u.status === 'pending')) }
+    }
+    case 'setUserStatus': {
+      return {
+        ...state,
+        users: state.users.map((u) => (u.id === action.userId ? { ...u, status: action.status } : u)),
+      }
+    }
+    case 'resetPassword':
+    case 'changePassword': {
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.userId ? { ...u, passwordHash: action.passwordHash, salt: action.salt } : u,
+        ),
+      }
+    }
+    case 'setUserRole': {
+      return {
+        ...state,
+        users: state.users.map((u) => (u.id === action.userId ? { ...u, role: action.role } : u)),
+      }
     }
     case 'switchUser': {
       return { ...state, currentUserId: action.userId }
@@ -401,7 +444,7 @@ function reducer(state: State, action: Action): State {
         : (action.users[0]?.id ?? state.currentUserId)
       return {
         ...state,
-        users: action.users,
+        users: action.users.map(normalizeUser),
         resumes: action.resumes.map(normalizeResume),
         interviews: action.interviews,
         jobs: action.jobs ?? [],

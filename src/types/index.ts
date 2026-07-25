@@ -1,12 +1,31 @@
 export type Role = 'admin' | 'hr' | 'interviewer'
 
+export type UserStatus = 'active' | 'pending' | 'disabled'
+
 export interface User {
   id: string
   name: string
   role: Role
   email: string
   color: string
+  /** 登录账号（唯一） */
+  phone: string
+  /** SHA-256(`${salt}:${password}`) 的 hex 输出 */
+  passwordHash: string
+  /** 每用户随机盐（16 位 hex） */
+  salt: string
+  status: UserStatus
+  createdAt: number
 }
+
+export const USER_STATUS_LABELS: Record<UserStatus, string> = {
+  active: '正常',
+  pending: '待审批',
+  disabled: '已禁用',
+}
+
+/** 新用户头像颜色调色板 */
+export const USER_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
 
 /** 教师招聘流程：导入 → 筛选 → 岗位匹配(锁定) → 面试 → 录用 → 入职；终态：面试不通过 / 离职 / 黑名单 */
 export type Stage =

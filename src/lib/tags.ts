@@ -1,5 +1,6 @@
-import type { Resume } from '@/types'
+import type { Resume, User } from '@/types'
 import { LEGACY_STAGE_MAP, type FullTime, type Stage } from '@/types'
+import { LEGACY_USER_CREDENTIALS, LEGACY_USER_PHONES } from '@/lib/seed'
 
 /** 证书词典：扫描简历文本自动识别 */
 export const CERTIFICATE_DICT = [
@@ -109,6 +110,19 @@ export function normalizeResume(r: Resume): Resume {
     notes: r.notes ?? [],
     activities: r.activities ?? [],
     stage: normalizeStage(r.stage as string),
+  }
+}
+
+/** 规范化用户数据：为旧版本（无登录体系）数据补齐登录字段；种子用户自动补手机号与初始密码凭据 */
+export function normalizeUser(u: User): User {
+  const legacyCred = LEGACY_USER_CREDENTIALS[u.id]
+  return {
+    ...u,
+    phone: u.phone || LEGACY_USER_PHONES[u.id] || '',
+    salt: u.salt || legacyCred?.salt || '',
+    passwordHash: u.passwordHash || legacyCred?.passwordHash || '',
+    status: u.status ?? 'active',
+    createdAt: u.createdAt ?? Date.now(),
   }
 }
 

@@ -1,13 +1,38 @@
 import type { Interview, Job, Resume, Stage, User, CertStage, FullTime } from '@/types'
 import { deriveTags } from '@/lib/tags'
 
+/**
+ * 种子用户登录凭据：salt 为每用户固定的 16 位 hex，passwordHash = SHA-256(`${salt}:123456`)。
+ * 初始密码均为 123456（登录后可在右上角「修改密码」中更换）。
+ */
+const SEED_CREDENTIALS: Record<string, { salt: string; passwordHash: string }> = {
+  'u-admin': { salt: 'a1b2c3d4e5f60718', passwordHash: 'fe17b83da6a7e11f27d19fae5e065cde8b31072b2780eab7ca053051fbc001d3' },
+  'u-hr1': { salt: 'b2c3d4e5f6071829', passwordHash: '706c358501aa4be8d0a4698bcfe93198f1bd10921575f1fcb6a791c813140d7b' },
+  'u-hr2': { salt: 'c3d4e5f60718293a', passwordHash: '26ffd9b1508f97949977890c6173044e60aaa607c18e827dea165a8e89b5e983' },
+  'u-int1': { salt: 'd4e5f60718293a4b', passwordHash: 'eac0adb50236d04cdb1221b8a2358adcfe5cd413552f2faca1f4f0d78786d01f' },
+  'u-int2': { salt: 'e5f60718293a4b5c', passwordHash: 'e6d7833637a9e1fe4021a92069c9971287d1e5241187549de5884463c2beb673' },
+}
+
+const SEED_BASE_TIME = 1735689600000 // 2025-01-01，种子用户注册时间基准
+
+function seedUser(u: Omit<User, 'phone' | 'passwordHash' | 'salt' | 'status' | 'createdAt'>, phone: string): User {
+  const cred = SEED_CREDENTIALS[u.id]
+  return { ...u, phone, salt: cred.salt, passwordHash: cred.passwordHash, status: 'active', createdAt: SEED_BASE_TIME }
+}
+
 export const SEED_USERS: User[] = [
-  { id: 'u-admin', name: '林总监', role: 'admin', email: 'admin@hireflow.cn', color: '#6366f1' },
-  { id: 'u-hr1', name: '王晓芸', role: 'hr', email: 'wangxy@hireflow.cn', color: '#f59e0b' },
-  { id: 'u-hr2', name: '陈立群', role: 'hr', email: 'chenlq@hireflow.cn', color: '#10b981' },
-  { id: 'u-int1', name: '张一鸣', role: 'interviewer', email: 'zhangym@hireflow.cn', color: '#3b82f6' },
-  { id: 'u-int2', name: '赵思琪', role: 'interviewer', email: 'zhaosq@hireflow.cn', color: '#ec4899' },
+  seedUser({ id: 'u-admin', name: '林总监', role: 'admin', email: 'admin@hireflow.cn', color: '#6366f1' }, '13800000001'),
+  seedUser({ id: 'u-hr1', name: '王晓芸', role: 'hr', email: 'wangxy@hireflow.cn', color: '#f59e0b' }, '13800000002'),
+  seedUser({ id: 'u-hr2', name: '陈立群', role: 'hr', email: 'chenlq@hireflow.cn', color: '#10b981' }, '13800000003'),
+  seedUser({ id: 'u-int1', name: '张一鸣', role: 'interviewer', email: 'zhangym@hireflow.cn', color: '#3b82f6' }, '13800000004'),
+  seedUser({ id: 'u-int2', name: '赵思琪', role: 'interviewer', email: 'zhaosq@hireflow.cn', color: '#ec4899' }, '13800000005'),
 ]
+
+/** 旧版本（无登录体系）数据中的种子用户手机号，用于加载时向后兼容补全 */
+export const LEGACY_USER_PHONES: Record<string, string> = Object.fromEntries(SEED_USERS.map((u) => [u.id, u.phone]))
+
+/** 旧版本种子用户的登录凭据，用于加载时向后兼容补全 */
+export const LEGACY_USER_CREDENTIALS: Record<string, { salt: string; passwordHash: string }> = SEED_CREDENTIALS
 
 interface TeacherSeed {
   name: string
