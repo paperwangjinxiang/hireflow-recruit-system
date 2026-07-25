@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import type { Activity, Interview, Job, Resume, Role, Stage, User, UserStatus } from '@/types'
-import { STAGE_LABELS, STAGE_ORDER, RESULT_LABELS } from '@/types'
+import type { Activity, Interview, InterviewEvaluation, Job, Resume, Role, Stage, StageTransition, User, UserStatus } from '@/types'
+import { STAGE_LABELS, STAGE_ORDER, RESULT_LABELS, CONCLUSION_LABELS } from '@/types'
+import { interviewTypeOf } from '@/lib/interview-utils'
 import { SEED_USERS, seedResumes, seedInterviews, seedJobs } from '@/lib/seed'
 import { normalizeResume, normalizeUser } from '@/lib/tags'
 import { checkCertFit } from '@/lib/match'
@@ -48,7 +49,8 @@ type Action =
   | { type: 'setUserRole'; userId: string; role: Role }
   | { type: 'switchUser'; userId: string }
   | { type: 'addInterview'; interview: Omit<Interview, 'id' | 'createdAt'>; actorId: string }
-  | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location'>>; actorId: string }
+  | { type: 'updateInterview'; id: string; patch: Partial<Pick<Interview, 'result' | 'feedback' | 'time' | 'location' | 'status' | 'note' | 'type' | 'interviewerIds' | 'jobId'>>; actorId: string }
+  | { type: 'submitEvaluation'; id: string; evaluation: Omit<InterviewEvaluation, 'submittedAt'>; actorId: string }
   | { type: 'deleteInterview'; id: string }
   | { type: 'addJob'; job: Omit<Job, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateJob'; id: string; patch: Partial<Pick<Job, 'region' | 'school' | 'level' | 'subject' | 'dormitory' | 'headcount' | 'status' | 'note'>>; actorId: string }
@@ -155,6 +157,13 @@ function activity(actorId: string, action: string): Activity {
   return { id: uid('a'), actorId, action, createdAt: Date.now() }
 }
 
+/** 追加阶段轨迹（与当前最后一条同阶段则跳过；招聘分析的转化率/停留时长口径来源） */
+function appendStageHistory(r: Resume, stage: Stage, at: number): StageTransition[] {
+  const hist = r.stageHistory ?? []
+  if (hist.length > 0 && hist[hist.length - 1].stage === stage) return hist
+  return [...hist, { stage, at }]
+}
+
 function jobLabel(job: Job | undefined): string {
   return job ? `${job.school}·${job.level}${job.subject}` : '未知岗位'
 }
@@ -220,6 +229,7 @@ function reducer(state: State, action: Action): State {
             ? [{ id: uid('n'), authorId: action.actorId, content: initialNote, createdAt: now }]
             : [],
           activities: [activity(action.actorId, '批量导入简历')],
+          stageHistory: [{ stage: fields.stage ?? 'imported', at: now }],
         })
       })
       return { ...state, resumes: [...created, ...state.resumes] }
@@ -247,6 +257,7 @@ function reducer(state: State, action: Action): State {
             ...(release ? { jobId: null, lockedBy: null, lockedAt: null } : {}),
             updatedAt: now,
             activities: acts,
+            stageHistory: appendStageHistory(r, action.stage, now),
           }
         }),
       }
@@ -304,6 +315,7 @@ function reducer(state: State, action: Action): State {
       if (!target) return state
       const updated = { ...target, ...action.patch }
       const resultChanged = action.patch.result && action.patch.result !== target.result
+      const cancelled = action.patch.status === 'cancelled' && target.status !== 'cancelled'
       return {
         ...state,
         interviews: state.interviews.map((iv) => (iv.id === action.id ? updated : iv)),
@@ -313,7 +325,7 @@ function reducer(state: State, action: Action): State {
               const acts = [...r.activities, activity(action.actorId, `${target.round}结果：${RESULT_LABELS[updated.result]}`)]
               // 通过 → 录用；未通过 → 面试不通过并释放锁定；候选人拒绝 → 回到筛选池并释放锁定
               if (updated.result === 'pass') {
-                return { ...r, stage: 'offered' as Stage, updatedAt: now, activities: [...acts, activity(action.actorId, '面试通过，进入录用')] }
+                return { ...r, stage: 'offered' as Stage, updatedAt: now, activities: [...acts, activity(action.actorId, '面试通过，进入录用')], stageHistory: appendStageHistory(r, 'offered', now) }
               }
               if (updated.result === 'fail') {
                 return {
@@ -322,6 +334,7 @@ function reducer(state: State, action: Action): State {
                   jobId: null, lockedBy: null, lockedAt: null,
                   updatedAt: now,
                   activities: [...acts, activity(action.actorId, '面试未通过，简历已释放回总库')],
+                  stageHistory: appendStageHistory(r, 'rejected', now),
                 }
               }
               if (updated.result === 'declined') {
@@ -331,11 +344,51 @@ function reducer(state: State, action: Action): State {
                   jobId: null, lockedBy: null, lockedAt: null,
                   updatedAt: now,
                   activities: [...acts, activity(action.actorId, '候选人拒绝面试，释放简历回筛选池')],
+                  stageHistory: appendStageHistory(r, 'screening', now),
                 }
               }
               return { ...r, updatedAt: now, activities: acts }
             })
-          : state.resumes,
+          : cancelled
+            ? state.resumes.map((r) =>
+                r.id === target.resumeId
+                  ? { ...r, updatedAt: now, activities: [...r.activities, activity(action.actorId, `取消了${target.round}（${new Date(target.time).toLocaleString('zh-CN')}）`)] }
+                  : r,
+              )
+            : state.resumes,
+      }
+    }
+    case 'submitEvaluation': {
+      const target = state.interviews.find((iv) => iv.id === action.id)
+      if (!target) return state
+      // 同一面试官重复提交时覆盖其旧评价；新面试官则追加
+      const evaluation: InterviewEvaluation = { ...action.evaluation, submittedAt: now }
+      const others = (target.evaluations ?? []).filter((ev) => ev.interviewerId !== evaluation.interviewerId)
+      const evaluations = [...others, evaluation]
+      const updated: Interview = { ...target, evaluations, status: 'completed' }
+      const avg = evaluations.reduce((s, ev) => {
+        const vals = Object.values(ev.scores)
+        return s + (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0)
+      }, 0) / evaluations.length
+      const typeLabel = interviewTypeOf(target)
+      return {
+        ...state,
+        interviews: state.interviews.map((iv) => (iv.id === action.id ? updated : iv)),
+        resumes: state.resumes.map((r) =>
+          r.id === target.resumeId
+            ? {
+                ...r,
+                updatedAt: now,
+                activities: [
+                  ...r.activities,
+                  activity(
+                    action.actorId,
+                    `面试完成：${typeLabel} 平均${avg.toFixed(1)}分 结论：${CONCLUSION_LABELS[evaluation.conclusion]}（${evaluations.length} 位面试官已评价）`,
+                  ),
+                ],
+              }
+            : r,
+        ),
       }
     }
     case 'deleteInterview': {
@@ -360,6 +413,7 @@ function reducer(state: State, action: Action): State {
                       stage: 'screening' as Stage,
                       updatedAt: now,
                       activities: [...r.activities, activity(action.actorId, '职位已关闭，释放简历回筛选池')],
+                      stageHistory: appendStageHistory(r, 'screening', now),
                     }
                   : r,
               ),
@@ -402,6 +456,7 @@ function reducer(state: State, action: Action): State {
                   ...r.activities,
                   activity(action.actorId, `${forced ? '（强制锁定）' : ''}匹配并锁定到「${jobLabel(job)}」`),
                 ],
+                stageHistory: appendStageHistory(r, 'matched', now),
               }
             : r,
         ),
@@ -440,6 +495,7 @@ function reducer(state: State, action: Action): State {
                 lockedAt: null,
                 updatedAt: now,
                 activities: [...r.activities, activity(action.actorId, `释放简历（${action.reason}），回到「${STAGE_LABELS[action.toStage]}」`)],
+                stageHistory: appendStageHistory(r, action.toStage, now),
               }
             : r,
         ),

@@ -1,4 +1,5 @@
 import type { Interview, Resume, Stage } from '@/types'
+import { interviewStatusOf } from '@/lib/interview-utils'
 
 /** 智能提醒引擎：扫描简历库与面试数据，产出可行动的提醒项 */
 
@@ -26,11 +27,11 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
   const reminders: Reminder[] = []
 
   // 1. 今日面试
-  const todayInterviews = interviews.filter((iv) => iv.result === 'pending' && iv.time >= todayStart.getTime() && iv.time < todayStart.getTime() + DAY)
+  const todayInterviews = interviews.filter((iv) => interviewStatusOf(iv) === 'pending' && iv.time >= todayStart.getTime() && iv.time < todayStart.getTime() + DAY)
   if (todayInterviews.length > 0) {
     const names = todayInterviews
       .slice(0, 3)
-      .map((iv) => `${new Date(iv.time).getHours()}:00 ${resumes.find((r) => r.id === iv.resumeId)?.name ?? ''}`)
+      .map((iv) => `${new Date(iv.time).getHours()}:00 ${iv.candidateName ?? resumes.find((r) => r.id === iv.resumeId)?.name ?? ''}`)
       .join('、')
     reminders.push({
       id: 'today-interview',
@@ -42,8 +43,32 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
     })
   }
 
-  // 2. 面试已过期待反馈
-  const overdueFeedback = interviews.filter((iv) => iv.result === 'pending' && iv.time < now - 12 * 60 * 60 * 1000)
+  // 1.5 面试前 2 小时提醒（面试官与 HR 需提前准备）
+  const soonInterviews = interviews.filter((iv) => interviewStatusOf(iv) === 'pending' && iv.time > now && iv.time <= now + 2 * 60 * 60 * 1000)
+  if (soonInterviews.length > 0) {
+    const detail = soonInterviews
+      .slice(0, 3)
+      .map((iv) => {
+        const t = new Date(iv.time)
+        const hhmm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
+        const name = iv.candidateName ?? resumes.find((r) => r.id === iv.resumeId)?.name ?? '候选人'
+        return `${hhmm} ${name}（${iv.round}）`
+      })
+      .join('、')
+    reminders.push({
+      id: 'soon-interview',
+      level: 'urgent',
+      icon: 'interview',
+      title: `${soonInterviews.length} 场面试将在 2 小时内开始`,
+      detail: detail + (soonInterviews.length > 3 ? ` 等 ${soonInterviews.length} 场` : '') + '，请相关面试官与 HR 提前准备',
+      filter: { stage: 'interview' },
+    })
+  }
+
+  // 2. 面试已过期待反馈（超 12 小时仍待面试且无任何评价）
+  const overdueFeedback = interviews.filter(
+    (iv) => interviewStatusOf(iv) === 'pending' && iv.time < now - 12 * 60 * 60 * 1000 && !(iv.evaluations && iv.evaluations.length > 0),
+  )
   if (overdueFeedback.length > 0) {
     reminders.push({
       id: 'overdue-feedback',
@@ -51,6 +76,21 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
       icon: 'feedback',
       title: `${overdueFeedback.length} 场面试已过期待反馈`,
       detail: '及时记录面试结果，避免候选人等待过久',
+      filter: { stage: 'interview' },
+    })
+  }
+
+  // 2.5 面试结束超 24 小时未填写结构化评价：点名提醒相关面试官
+  const noEval = interviews.filter(
+    (iv) => interviewStatusOf(iv) === 'pending' && iv.time < now - 24 * 60 * 60 * 1000 && !(iv.evaluations && iv.evaluations.length > 0),
+  )
+  if (noEval.length > 0) {
+    reminders.push({
+      id: 'evaluation-overdue',
+      level: 'warn',
+      icon: 'feedback',
+      title: `${noEval.length} 场面试结束超 24 小时未填写评价`,
+      detail: '请相关面试官尽快在「面试管理」中补填结构化评价',
       filter: { stage: 'interview' },
     })
   }
@@ -92,6 +132,46 @@ export function computeReminders(resumes: Resume[], interviews: Interview[]): Re
       title: `${staleFlow.length} 份简历流程滞留超 5 天`,
       detail: `筛选中 ${byStage('screening')} 份 · 面试中 ${byStage('interview')} 份`,
       filter: { stage: 'screening' },
+    })
+  }
+
+  // 5.1 筛选滞留：screening 超 3 天未推进（提醒 HR 尽快出筛选结论；镜像字段足够，无需拉 doc）
+  const staleScreening = resumes.filter((r) => r.stage === 'screening' && now - r.updatedAt > 3 * DAY)
+  if (staleScreening.length > 0) {
+    reminders.push({
+      id: 'stale-screening',
+      level: 'warn',
+      icon: 'stale',
+      title: `${staleScreening.length} 份简历筛选中超 3 天未推进`,
+      detail: `最早一份已滞留 ${Math.floor((now - Math.min(...staleScreening.map((r) => r.updatedAt))) / DAY)} 天，请 HR 尽快给出筛选结论`,
+      filter: { stage: 'screening' },
+    })
+  }
+
+  // 5.2 锁定滞留：matched 超 5 天未安排面试（提醒对应负责人；镜像无 lockedAt 时用 updatedAt 兜底）
+  const staleMatched = resumes.filter((r) => r.stage === 'matched' && now - (r.lockedAt ?? r.updatedAt) > 5 * DAY)
+  if (staleMatched.length > 0) {
+    const ownerCount = new Set(staleMatched.map((r) => r.lockedBy).filter(Boolean)).size
+    reminders.push({
+      id: 'stale-matched',
+      level: 'warn',
+      icon: 'lock',
+      title: `${staleMatched.length} 份锁定简历超 5 天未安排面试`,
+      detail: `涉及 ${ownerCount} 位负责人，请尽快安排面试或释放锁定`,
+      filter: { stage: 'matched' },
+    })
+  }
+
+  // 5.3 录用滞留：offered 超 7 天未入职（提醒跟进入职手续）
+  const staleOffered = resumes.filter((r) => r.stage === 'offered' && now - r.updatedAt > 7 * DAY)
+  if (staleOffered.length > 0) {
+    reminders.push({
+      id: 'stale-offered',
+      level: 'warn',
+      icon: 'stale',
+      title: `${staleOffered.length} 份录用简历超 7 天未入职`,
+      detail: '请跟进候选人入职手续，避免录用流失',
+      filter: { stage: 'offered' },
     })
   }
 

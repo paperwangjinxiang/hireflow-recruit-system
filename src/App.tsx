@@ -8,6 +8,8 @@ import AuthPage from '@/pages/AuthPage'
 import ForceChangePassword from '@/components/ForceChangePassword'
 import Dashboard from '@/pages/Dashboard'
 import Resumes from '@/pages/Resumes'
+import Interviews from '@/pages/Interviews'
+import Analytics from '@/pages/Analytics'
 import Jobs from '@/pages/Jobs'
 import ProgressPage from '@/pages/Progress'
 import ImportPage from '@/pages/ImportPage'
@@ -75,6 +77,8 @@ function AuthGate() {
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/progress" element={<ProgressPage />} />
         <Route path="/resumes" element={<Resumes />} />
+        <Route path="/interviews" element={<Interviews />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/import" element={<ImportPage />} />
         <Route
           path="/ai-parse"

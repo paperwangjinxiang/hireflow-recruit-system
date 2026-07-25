@@ -1,10 +1,11 @@
 /**
  * Pages Function: POST /api/files — 简历附件上传（零知识：内容是客户端加密后的密文字节）
  * body JSON {name, mime, data_b64}（base64 编码文件内容，解码后上限 4MB）
- * 生成 key resumes/{uuid}-{安全文件名}。优先 R2（BUCKET），未开通时回退 KV（BLOBS，key 加 file: 前缀）。
- * → 201 {key, ok:true, store:"r2"|"kv"}
+ * 生成 key resumes/{uuid}-{安全文件名}。存储驱动由 _storage.js 决定：OSS(config:oss) → R2(BUCKET) → KV(BLOBS)。
+ * → 201 {key, ok:true, store:"oss"|"r2"|"kv"}
  */
 import { CORS, requireAuth } from '../_auth.js'
+import { getStore } from '../_storage.js'
 const MAX_BODY = 8 * 1024 * 1024      // JSON 信封（base64 约膨胀 4/3）
 const MAX_FILE = 4 * 1024 * 1024      // 解码后文件内容上限
 
@@ -15,7 +16,14 @@ export async function onRequestOptions() {
 export async function onRequestPost({ request, env }) {
   const unauth = await requireAuth(request, env)
   if (unauth) return unauth
-  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
+  let store
+  try {
+    store = await getStore(env)
+  } catch (e) {
+    if (e && e.isStoreError) return jsonErr(e.message, e.status)
+    throw e
+  }
+  if (!store) return jsonErr('no storage configured', 501)
   const body = await request.text()
   if (body.length > MAX_BODY) return jsonErr('payload too large', 413)
   let data
@@ -29,16 +37,13 @@ export async function onRequestPost({ request, env }) {
   if (bytes.length > MAX_FILE) return jsonErr('file too large (max 4MB)', 413)
 
   const key = `resumes/${crypto.randomUUID()}-${safeName(name)}`
-  let store = 'r2'
-  if (env.BUCKET) {
-    await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: mime } })
-  } else {
-    store = 'kv'
-    await env.BLOBS.put(`file:${key}`, bytes, {
-      metadata: { mime, name, size: bytes.length, created: Date.now() },
-    })
+  try {
+    await store.put(key, bytes, mime, name)
+  } catch (e) {
+    if (e && e.isStoreError) return jsonErr(e.message, e.status)
+    throw e
   }
-  return new Response(JSON.stringify({ key, ok: true, store }), {
+  return new Response(JSON.stringify({ key, ok: true, store: store.name }), {
     status: 201, headers: { ...CORS, 'Content-Type': 'application/json' },
   })
 }

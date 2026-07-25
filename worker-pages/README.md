@@ -6,7 +6,8 @@
 - `functions/api/inbox/` — 在线投递箱（D1 原子 INSERT；`POST` 投递、`GET` 拉取、`POST /consume` 删除已入库条目）
 - `functions/api/ocr/` — 云 OCR 代理（百度通用文字识别-高精度版，可选，token 仍缓存于 KV）
 - `functions/api/candidates/` — 候选人分表存储（D1 `candidates` 表 + FTS5 全文检索，支撑 5 万份简历规模）
-- `functions/api/files/` — 简历附件存储（R2 bucket `hireflow-files`，**待开通 R2 后生效**，见下文）
+- `functions/api/files/` — 简历附件存储（可插拔存储层：OSS → R2 → KV 兜底，见下文）
+- `functions/api/files-stats.js` — 附件存储统计（对账用）
 
 ## candidates API（候选人分表）
 
@@ -34,13 +35,43 @@ D1 表结构见 `migrations/0001_candidates.sql`（`candidates` + 4 个索引 + 
 迁移脚本：`网站开发/migrate_candidates.py`（只读整库信封 → 逐候选人加密 doc + 索引 → bulk 写入 → 对账）。
 首次迁移已完成：信封 59 份 = D1 59 行 ✅。双写期信封保持原样作为回滚保障。
 
-## files API（R2 附件存储）
+## files API（可插拔附件存储：OSS → R2 → KV）
 
-- `POST /api/files`：`{name, mime, data_b64}`（base64，解码后 ≤4MB；内容为客户端加密密文）→ 201 `{key, ok:true}`，key 形如 `resumes/{uuid}-{安全文件名}`
-- `GET /api/files/{key}`：按存储的 Content-Type 返回（PDF 可预览，catch-all 路由 `[[key]].js` 支持 key 内斜杠）
-- `DELETE /api/files/{key}`：删除
+- `POST /api/files`：`{name, mime, data_b64}`（base64，解码后 ≤4MB；内容为客户端加密密文）→ 201 `{key, ok:true, store}`，key 形如 `resumes/{uuid}-{安全文件名}`
+- `GET /api/files/{key}`：按存储的 Content-Type 返回（PDF 可预览，catch-all 路由 `[[key]].js` 支持 key 内斜杠），响应头 `X-HF-Store` 报告实际驱动
+- `DELETE /api/files/{key}`：删除 → `{deleted:true, store}`
+- `GET /api/files-stats`：存储统计。`oss`/`r2` 返回 `{store, count, totalBytes, byMonth}`；
+  `kv` 返回 `{store:"kv", count:null, totalBytes:null, note}`（函数内无账号凭证无法列举 KV 键，
+  对账用 `网站开发/migrate_files_to_oss.py --list-only`）
 
-**当前状态：R2 未开通，端点返回 501 `r2 not configured`。** 开通步骤（一次性）：
+**存储驱动优先级**（`functions/api/_storage.js`，统一接口 `put/get/del`）：
+
+1. KV `config:oss` 存在且 `enabled !== false` → **阿里云 OSS**（REST 直连，V1 签名，桶私有）
+2. `env.BUCKET` 绑定 → R2
+3. `env.BLOBS` → KV 兜底（key 加 `file:` 前缀，metadata 存 mime/name/size/created）
+
+OSS 模式下请求失败（签名错/网络错/配置不完整）返回 **502 可读错误**，**不静默降级 KV**（避免双写分裂）。
+`config:oss` 读取带 60s 模块级缓存，写入/修改后最长 60s 生效。
+
+**config:oss 格式**（密钥只存服务端 KV，绝不进客户端/前端仓库）：
+
+```json
+{"provider":"aliyun","enabled":true,"bucket":"...","endpoint":"oss-cn-hangzhou.aliyuncs.com",
+ "accessKeyId":"...","accessKeySecret":"...","prefix":"hireflow-attachments/"}
+```
+
+OSS 对象名 = `prefix + 逻辑key`（如 `hireflow-attachments/resumes/uuid-xxx.pdf`），逻辑 key 不变，
+切换/回滚时候选人 doc 里的附件引用不失效。
+
+**切换到 OSS 的步骤**（拿到密钥后，在 `网站开发` 目录）：
+
+1. 复制 `oss-config.example.json` 为 `oss-config.json` 填入密钥（已加入 `.gitignore`，不落 git）
+2. `python migrate_files_to_oss.py` —— KV 存量附件按原 key 直传 OSS + 抽样校验（幂等，默认不删 KV）
+3. `python set_oss_config.py` —— 写 KV `config:oss` 并验证 `files-stats` 显示 `store=oss`
+4. 观察无误后 `python migrate_files_to_oss.py --delete-kv` 清理 KV 存量（可选）
+5. 回滚：`python set_oss_config.py --disable`（60s 内回退 KV/R2）
+
+**R2 备选**：开通 R2 后按原步骤绑定 `BUCKET`（见下）；若 `config:oss` 存在则 OSS 优先。
 
 1. Cloudflare Dashboard → R2 → 按提示开通（需绑定支付方式，含免费额度；API 返回 10042，无法脚本代办）
 2. `npx wrangler r2 bucket create hireflow-files`
@@ -56,7 +87,7 @@ npx wrangler pages deploy public --project-name=hireflow-store-api
 ```
 
 绑定：
-- KV 命名空间 `BLOBS`（仅供 OCR token 缓存使用），见 `wrangler.toml`
+- KV 命名空间 `BLOBS`（files 的 KV 兜底存储 + `config:oss`/`config:api-token` 等配置 + OCR token 缓存），见 `wrangler.toml`
 - D1 数据库 `hireflow-store` 绑定名 `DB`（jsonBlob / inbox / candidates 的存储后端）——Pages 项目的 D1 绑定需在
   Cloudflare Dashboard → Pages → hireflow-store-api → Settings → Bindings 配置
   （或 API `PATCH /accounts/{account_id}/pages/projects/hireflow-store-api` 的

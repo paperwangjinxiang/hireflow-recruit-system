@@ -61,6 +61,12 @@ export interface Activity {
   createdAt: number
 }
 
+/** 阶段轨迹条目：候选人进入某阶段的时间点（招聘分析的漏斗转化率与停留时长口径来源） */
+export interface StageTransition {
+  stage: Stage
+  at: number
+}
+
 export type CertStage = '幼儿园' | '小学' | '初中' | '高中' | ''
 export type FullTime = '全日制' | '非全日制' | '未知'
 
@@ -117,6 +123,8 @@ export interface Resume {
   updatedAt: number
   notes: Note[]
   activities: Activity[]
+  /** 阶段轨迹（由 store 阶段变更路径维护；旧数据缺省时由 analytics.deriveStageHistory 从活动记录回填推导） */
+  stageHistory?: StageTransition[]
   /** 云端原始附件（加密上传，零知识留存）；导入失败/未留存时为空数组 */
   attachments?: AttachmentMeta[]
 }
@@ -139,19 +147,84 @@ export interface Job {
 
 export type InterviewResult = 'pending' | 'pass' | 'fail' | 'declined'
 
+/** 面试类型（试讲是教师招聘核心环节） */
+export type InterviewType = '试讲' | '结构化面试' | '笔试' | '复试'
+
+/** 面试进行状态：待面试 / 已完成（已提交评价）/ 已取消 */
+export type InterviewStatus = 'pending' | 'completed' | 'cancelled'
+
+/** 评价结论 */
+export type EvaluationConclusion = 'strong' | 'recommend' | 'hold' | 'reject'
+
+/** 单个面试官提交的结构化评价 */
+export interface InterviewEvaluation {
+  interviewerId: string
+  /** 维度名 → 1-5 分 */
+  scores: Record<string, number>
+  /** 总评文字 */
+  comment: string
+  conclusion: EvaluationConclusion
+  submittedAt: number
+}
+
 export interface Interview {
   id: string
   resumeId: string
-  round: string // 试讲 / 一面 / 二面 / 校长面 / 终面
+  round: string // 试讲 / 一面 / 二面 / 校长面 / 终面（新数据与 type 保持一致）
   time: number // 面试时间戳
-  interviewerId: string
+  interviewerId: string // 主面试官（兼容旧数据；多面试官见 interviewerIds）
   location: string // 面试地点或会议链接
   result: InterviewResult
   feedback: string
   createdAt: number
+  // ---- 面试管理模块扩展字段（可选，旧数据经 interview-utils 兜底推导） ----
+  /** 面试类型：试讲 / 结构化面试 / 笔试 / 复试；缺省时按 round 推导 */
+  type?: InterviewType
+  /** 全部面试官（可多选）；缺省时回退为 [interviewerId] */
+  interviewerIds?: string[]
+  /** 关联岗位（候选人锁定岗位默认带出） */
+  jobId?: string | null
+  /** 候选人姓名快照（列表展示兜底，避免依赖简历库查询） */
+  candidateName?: string
+  /** 备注 */
+  note?: string
+  /** 进行状态；缺省时按 result 推导（pending→待面试，其余→已完成） */
+  status?: InterviewStatus
+  /** 创建人 */
+  createdBy?: string
+  /** 各面试官提交的结构化评价（可多人分别提交） */
+  evaluations?: InterviewEvaluation[]
 }
 
 export const INTERVIEW_ROUNDS = ['试讲', '一面', '二面', '校长面', '终面']
+
+export const INTERVIEW_TYPES: InterviewType[] = ['试讲', '结构化面试', '笔试', '复试']
+
+export const INTERVIEW_STATUS_LABELS: Record<InterviewStatus, string> = {
+  pending: '待面试',
+  completed: '已完成',
+  cancelled: '已取消',
+}
+
+export const INTERVIEW_STATUS_COLORS: Record<InterviewStatus, string> = {
+  pending: 'bg-sky-100 text-sky-700 border-sky-200',
+  completed: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  cancelled: 'bg-slate-100 text-slate-500 border-slate-200',
+}
+
+export const CONCLUSION_LABELS: Record<EvaluationConclusion, string> = {
+  strong: '强烈推荐',
+  recommend: '推荐',
+  hold: '待定',
+  reject: '不推荐',
+}
+
+export const CONCLUSION_COLORS: Record<EvaluationConclusion, string> = {
+  strong: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  recommend: 'bg-teal-100 text-teal-700 border-teal-200',
+  hold: 'bg-amber-100 text-amber-700 border-amber-200',
+  reject: 'bg-rose-100 text-rose-700 border-rose-200',
+}
 
 export const RESULT_LABELS: Record<InterviewResult, string> = {
   pending: '待面试',

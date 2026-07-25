@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
-import { LayoutDashboard, Users, FileUp, Contact, KeyRound, LogOut, Sparkles, BriefcaseBusiness, ClipboardList, Lock } from 'lucide-react'
+import { LayoutDashboard, Users, FileUp, Contact, KeyRound, LogOut, Sparkles, BriefcaseBusiness, ClipboardList, Lock, CalendarClock, BarChart3 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
 import { clearSession, createCredential, validatePasswordStrength, verifyPassword } from '@/lib/auth'
@@ -18,6 +18,8 @@ const NAV = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, end: true },
   { to: '/jobs', label: '职位发布', icon: BriefcaseBusiness },
   { to: '/resumes', label: '简历库', icon: Contact },
+  { to: '/interviews', label: '面试管理', icon: CalendarClock },
+  { to: '/analytics', label: '招聘分析', icon: BarChart3 },
   { to: '/progress', label: '招聘进展', icon: ClipboardList },
   { to: '/import', label: '批量导入', icon: FileUp },
   { to: '/ai-parse', label: 'AI 解析', icon: Sparkles },

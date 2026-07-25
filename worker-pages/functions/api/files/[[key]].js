@@ -1,47 +1,64 @@
 /**
- * Pages Function: /api/files/* — R2 文件读取/删除（catch-all 路由处理 key 中的斜杠）
+ * Pages Function: /api/files/* — 附件读取/删除（catch-all 路由处理 key 中的斜杠）
  *   GET    /api/files/resumes/xxx-yyy.pdf  按存储的 Content-Type 返回（支持 PDF 预览）
  *   DELETE /api/files/resumes/xxx-yyy.pdf  删除
+ * 存储驱动由 _storage.js 决定（OSS → R2 → KV）；响应头 X-HF-Store / JSON 字段 store 报告实际驱动。
  */
 import { CORS, requireAuth } from '../_auth.js'
+import { getStore } from '../_storage.js'
 
 export async function onRequestOptions() {
   return new Response(null, { status: 204, headers: CORS })
 }
 
+async function pickStore(env) {
+  try {
+    return { store: await getStore(env) }
+  } catch (e) {
+    if (e && e.isStoreError) return { err: jsonErr(e.message, e.status) }
+    throw e
+  }
+}
+
 export async function onRequestGet({ request, env, params }) {
   const unauth = await requireAuth(request, env)
   if (unauth) return unauth
-  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
+  const { store, err } = await pickStore(env)
+  if (err) return err
+  if (!store) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)
-  const headers = { ...CORS }
-  let body = null
-  if (env.BUCKET) {
-    const obj = await env.BUCKET.get(key)
-    if (obj === null) return jsonErr('file not found', 404)
-    body = obj.body
-    headers['Content-Type'] = (obj.httpMetadata && obj.httpMetadata.contentType) || guessType(key)
-  } else {
-    const { value, metadata } = await env.BLOBS.getWithMetadata(`file:${key}`, 'arrayBuffer')
-    if (value === null) return jsonErr('file not found', 404)
-    body = value
-    headers['Content-Type'] = (metadata && metadata.mime) || guessType(key)
+  let got
+  try {
+    got = await store.get(key)
+  } catch (e) {
+    if (e && e.isStoreError) return jsonErr(e.message, e.status)
+    throw e
   }
+  if (got === null) return jsonErr('file not found', 404)
+  const headers = { ...CORS }
+  headers['Content-Type'] = got.mime || guessType(key)
   headers['Content-Disposition'] = `inline; filename="${encodeURIComponent(key.split('/').pop())}"`
   headers['Cache-Control'] = 'private, max-age=3600'
-  return new Response(body, { status: 200, headers })
+  headers['X-HF-Store'] = store.name
+  return new Response(got.body, { status: 200, headers })
 }
 
 export async function onRequestDelete({ request, env, params }) {
   const unauth = await requireAuth(request, env)
   if (unauth) return unauth
-  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
+  const { store, err } = await pickStore(env)
+  if (err) return err
+  if (!store) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)
-  if (env.BUCKET) await env.BUCKET.delete(key)
-  else await env.BLOBS.delete(`file:${key}`)
-  return new Response(JSON.stringify({ deleted: true }), {
+  try {
+    await store.del(key)
+  } catch (e) {
+    if (e && e.isStoreError) return jsonErr(e.message, e.status)
+    throw e
+  }
+  return new Response(JSON.stringify({ deleted: true, store: store.name }), {
     status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
   })
 }
