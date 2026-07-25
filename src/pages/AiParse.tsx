@@ -87,13 +87,36 @@ export default function AiParse() {
     setItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, status: 'done', fields, method } : i)))
   }
 
+  /** 单份文件的提取+解析（失败项可凭保留的 file 重试） */
+  async function runOne({ item, file }: { item: FileItem; file: File }) {
+    const setProgress = (msg: string) =>
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: msg } : i)))
+    try {
+      const { text, warnings } = await extractText(file, setProgress)
+      if (!text.trim()) throw new Error('OCR 也无法识别出文字，请上传更清晰的扫描件或文字版简历')
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, rawText: text, progress: '解析字段中…' } : i)))
+      await processOne(item.id, item.fileName, text, warnings)
+    } catch (e) {
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: e instanceof Error ? e.message : '解析失败' } : i)),
+      )
+    }
+  }
+
+  /** 失败项重试：重置状态后重新走提取+解析管线 */
+  async function retryOne(item: FileItem) {
+    if (!item.file) return
+    setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: 'processing', error: undefined, progress: '重试中…' } : i)))
+    await runOne({ item, file: item.file })
+  }
+
   async function handleFiles(files: FileList | File[]) {
     const list = [...files]
     if (list.length === 0) return
     const pairs: { item: FileItem; file: File }[] = []
     for (const file of list) {
       if (!detectKind(file.name)) {
-        toast.error(`不支持的格式：${file.name}（支持 PDF / DOCX / TXT / MD）`)
+        toast.error(`不支持的格式：${file.name}（支持 PDF / DOCX / DOC / TXT / MD）`)
         continue
       }
       // 大小护栏：单文件 >20MB 直接拒绝
@@ -106,20 +129,6 @@ export default function AiParse() {
     }
     setItems((prev) => [...pairs.map((p) => p.item), ...prev])
     // 受限并发解析：3 个 worker 消费队列（OCR 场景下 Tesseract 单线程天然受限）
-    const runOne = async ({ item, file }: { item: FileItem; file: File }) => {
-      const setProgress = (msg: string) =>
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: msg } : i)))
-      try {
-        const { text, warnings } = await extractText(file, setProgress)
-        if (!text.trim()) throw new Error('OCR 也无法识别出文字，请上传更清晰的扫描件或文字版简历')
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, rawText: text, progress: '解析字段中…' } : i)))
-        await processOne(item.id, item.fileName, text, warnings)
-      } catch (e) {
-        setItems((prev) =>
-          prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: e instanceof Error ? e.message : '解析失败' } : i)),
-        )
-      }
-    }
     let cursor = 0
     const workers = Array.from({ length: Math.min(3, pairs.length) }, async () => {
       while (cursor < pairs.length) {
@@ -429,7 +438,7 @@ export default function AiParse() {
           >
             <FileUp className="h-10 w-10 text-indigo-400" />
             <p className="font-medium">点击选择或拖拽简历文件到此处</p>
-            <p className="text-xs text-slate-400">支持 PDF、DOCX、TXT、MD，可一次选择多份批量解析；扫描件图片型 PDF 自动启用 OCR 识别</p>
+            <p className="text-xs text-slate-400">支持 PDF、DOCX、DOC、TXT、MD，可一次选择多份批量解析；扫描件图片型 PDF 自动启用 OCR 识别</p>
           </div>
           <input
             ref={fileRef}
@@ -479,6 +488,22 @@ export default function AiParse() {
             </div>
           </div>
 
+          {/* 解析队列进度条：已完成 x/总数（含失败项计入已完成） */}
+          {items.some((i) => i.status === 'processing') && (
+            <div className="space-y-1">
+              <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-indigo-500 transition-all"
+                  style={{ width: `${Math.round(((doneItems.length + items.filter((i) => i.status === 'error').length) / items.length) * 100)}%` }}
+                />
+              </div>
+              <p className="text-xs text-slate-400">
+                已完成 {doneItems.length + items.filter((i) => i.status === 'error').length}/{items.length}
+                （最多 3 份并发解析）
+              </p>
+            </div>
+          )}
+
           {items.map((item) => (
             <Card key={item.id} className={item.status === 'error' ? 'border-rose-200' : ''}>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
@@ -526,7 +551,14 @@ export default function AiParse() {
               </CardHeader>
 
               {item.status === 'error' && (
-                <CardContent><p className="text-sm text-rose-600">{item.error}</p></CardContent>
+                <CardContent className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-rose-600">{item.error}</p>
+                  {item.file && (
+                    <Button variant="outline" size="sm" onClick={() => void retryOne(item)}>
+                      重试
+                    </Button>
+                  )}
+                </CardContent>
               )}
 
               {item.status === 'done' && (

@@ -1,11 +1,12 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock, Contact, GitCompareArrows, Columns3, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock, Contact, GitCompareArrows, Columns3, ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
+import { partialResumeFromIndex } from '@/lib/candidates'
 import { tagColor } from '@/lib/tags'
 import { downloadCSV, resumesToCSV } from '@/lib/csv-export'
-import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
+import { CERT_STAGES, STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -85,50 +86,8 @@ function loadSort(): SortState {
   return null
 }
 
-export default function Resumes() {
-  const { resumes, users, jobs, currentUser, dispatch } = useStore()
-  const [searchParams] = useSearchParams()
-  const [pool, setPool] = useState<'pool' | 'mine'>((searchParams.get('pool') as 'pool' | 'mine') ?? 'pool')
-  const [keyword, setKeyword] = useState('')
-  const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
-  const [assigneeFilter, setAssigneeFilter] = useState<string>(searchParams.get('assignee') ?? 'all')
-  const [positionFilter, setPositionFilter] = useState<string>('all')
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [detailId, setDetailId] = useState<string | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [compareOpen, setCompareOpen] = useState(false)
-  const [view, setView] = useState<'table' | 'kanban'>('table')
-
-  const positions = useMemo(() => [...new Set(resumes.map((r) => r.position))].sort(), [resumes])
-
-  /** 我锁定的简历数量（个人库角标） */
-  const myLockedCount = useMemo(
-    () => resumes.filter((r) => r.jobId && r.lockedBy === currentUser.id).length,
-    [resumes, currentUser.id],
-  )
-
-  const filtered = useMemo(() => {
-    const kw = keyword.trim().toLowerCase()
-    // 可调配口径：stage ∈ {imported, screening, rejected} 且未锁定岗位（jobId 为空），
-    // 明确排除 matched/interview/offered/onboarded/offboarded/blacklisted
-    const deployable = (r: Resume) =>
-      !r.jobId && (r.stage === 'imported' || r.stage === 'screening' || r.stage === 'rejected')
-    return resumes.filter((r) => {
-      // 总简历库只显示可调配简历（明确按阶段筛选时除外，便于从仪表盘下钻查看）；
-      // 个人库只显示我锁定的简历
-      if (pool === 'pool' && stageFilter === 'all' && !deployable(r)) return false
-      if (pool === 'mine' && !(r.jobId && r.lockedBy === currentUser.id)) return false
-      if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, r.major, r.hometown, r.certSubject, r.certStage, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
-      if (stageFilter !== 'all' && r.stage !== stageFilter) return false
-      if (assigneeFilter === 'me' && r.assigneeId !== currentUser.id) return false
-      if (assigneeFilter === 'unassigned' && r.assigneeId) return false
-      if (assigneeFilter !== 'all' && assigneeFilter !== 'me' && assigneeFilter !== 'unassigned' && r.assigneeId !== assigneeFilter) return false
-      if (positionFilter !== 'all' && r.position !== positionFilter) return false
-      return true
-    })
-  }, [resumes, keyword, pool, stageFilter, assigneeFilter, positionFilter, currentUser.id])
-
-  // 列显示定制与表头排序（偏好持久化到 localStorage）
+/** 列显示定制 + 表头排序（表格/看板两种模式共用，偏好持久化 localStorage） */
+function useColumnPrefs() {
   const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(loadVisibleCols)
   const [sort, setSort] = useState<SortState>(loadSort)
 
@@ -158,20 +117,674 @@ export default function Resumes() {
     }
   }
 
-  /** 排序后的列表：0 值（年龄/毕业年份未知）始终排最后 */
-  const sorted = useMemo(() => {
-    if (!sort) return filtered
-    return [...filtered].sort((a, b) => {
-      const va = a[sort.key]
-      const vb = b[sort.key]
-      if (va === 0 && vb === 0) return 0
-      if (va === 0) return 1
-      if (vb === 0) return -1
-      return sort.dir === 'asc' ? va - vb : vb - va
-    })
-  }, [filtered, sort])
+  const visibleColumns = COLUMNS.filter((c) => visibleCols.has(c.key))
+  return { visibleCols, sort, toggleCol, toggleSort, visibleColumns }
+}
 
-  const visibleColumns = useMemo(() => COLUMNS.filter((c) => visibleCols.has(c.key)), [visibleCols])
+/** 单元格渲染：按列 key 分发（姓名列固定，其余列可在「列设置」中隐藏）；两种模式共用 */
+function renderCell(col: ColKey, r: Resume, users: { id: string; name: string; color: string }[], jobs: { id: string; school: string; level: string; subject: string }[]): ReactNode {
+  const assignee = users.find((u) => u.id === r.assigneeId)
+  const job = jobs.find((j) => j.id === r.jobId)
+  switch (col) {
+    case 'name':
+      return (
+        <>
+          <div className="flex items-center gap-1.5 font-medium">
+            {r.name}
+            {r.rating > 0 && (
+              <span className="flex items-center" title={`评分 ${r.rating}/5`}>
+                {Array.from({ length: r.rating }).map((_, i) => (
+                  <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-400" />
+                ))}
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-slate-400">{r.phone}</div>
+        </>
+      )
+    case 'age':
+      return <span className="text-slate-600">{r.age > 0 ? `${r.age} 岁` : '—'}</span>
+    case 'certStage':
+      return r.certStage ? (
+        <Badge variant="outline" className="bg-teal-50 text-teal-700 border-teal-200">{r.certStage}</Badge>
+      ) : r.certQualified ? (
+        <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200" title={r.certNote || '持教师资格考试合格证明'}>合格证明</Badge>
+      ) : (
+        <span className="text-xs text-slate-400">无证</span>
+      )
+    case 'certSubject':
+      return <span className="text-slate-600">{r.certSubject || '—'}</span>
+    case 'gradYear':
+      return <span className="text-slate-600">{r.gradYear > 0 ? r.gradYear : '—'}</span>
+    case 'hometown':
+      return <span className="text-slate-600">{r.hometown || '—'}</span>
+    case 'university':
+      return (
+        <div className="max-w-[160px]">
+          <div className="truncate text-slate-700">{r.university || '—'}</div>
+          {r.fullTime !== '未知' && (
+            <Badge variant="outline" className={`mt-0.5 text-[10px] ${r.fullTime === '全日制' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+              {r.fullTime}
+            </Badge>
+          )}
+        </div>
+      )
+    case 'major':
+      return <span className="block max-w-[120px] truncate text-slate-600">{r.major || '—'}</span>
+    case 'experience':
+      return <span className="text-slate-600">{r.experience} 年</span>
+    case 'tags':
+      return (
+        <div className="flex max-w-[150px] flex-wrap gap-1">
+          {r.tags.slice(0, 2).map((t) => (
+            <Badge key={t} variant="outline" className={`text-[11px] ${tagColor(t)}`}>{t}</Badge>
+          ))}
+          {r.tags.length > 2 && <span className="text-[11px] text-slate-400">+{r.tags.length - 2}</span>}
+        </div>
+      )
+    case 'stage':
+      return <Badge variant="outline" className={STAGE_COLORS[r.stage]}>{STAGE_LABELS[r.stage]}</Badge>
+    case 'job':
+      return job ? (
+        <span className="flex items-center gap-1 text-xs text-cyan-700">
+          <Lock className="h-3 w-3" />{job.school}·{job.level}{job.subject}
+        </span>
+      ) : (
+        <span className="text-xs text-slate-300">—</span>
+      )
+    case 'assignee':
+      return assignee ? (
+        <span className="flex items-center gap-2">
+          <Avatar className="h-6 w-6">
+            <AvatarFallback style={{ backgroundColor: assignee.color, color: '#fff', fontSize: 11 }}>{assignee.name.slice(0, 1)}</AvatarFallback>
+          </Avatar>
+          <span className="text-sm">{assignee.name}</span>
+        </span>
+      ) : (
+        <span className="text-sm text-slate-400">未分配</span>
+      )
+    case 'createdAt':
+      return <span className="text-xs text-slate-500">{new Date(r.createdAt).toLocaleDateString('zh-CN')}</span>
+  }
+}
+
+/** 排序工具：0 值（年龄/毕业年份未知）始终排最后（仅对当前页数据排序） */
+function sortRows(rows: Resume[], sort: SortState): Resume[] {
+  if (!sort) return rows
+  return [...rows].sort((a, b) => {
+    const va = a[sort.key]
+    const vb = b[sort.key]
+    if (va === 0 && vb === 0) return 0
+    if (va === 0) return 1
+    if (vb === 0) return -1
+    return sort.dir === 'asc' ? va - vb : vb - va
+  })
+}
+
+/** 可调配口径：stage ∈ {imported, screening, rejected} 且未锁定岗位 */
+const deployable = (r: Resume) =>
+  !r.jobId && (r.stage === 'imported' || r.stage === 'screening' || r.stage === 'rejected')
+
+export default function Resumes() {
+  const { candidatesMode } = useStore()
+  if (candidatesMode === 'api') return <ResumesApi />
+  return <ResumesLegacy />
+}
+
+// =====================================================================
+// API 模式：候选人分表服务端分页
+// =====================================================================
+
+function ResumesApi() {
+  const { resumes, users, jobs, currentUser, dispatch, candidatesQuery, candidateDetail, deleteCandidates } = useStore()
+  const [searchParams] = useSearchParams()
+  const [pool, setPool] = useState<'pool' | 'mine'>((searchParams.get('pool') as 'pool' | 'mine') ?? 'pool')
+  const [keyword, setKeyword] = useState('')
+  const [debouncedKeyword, setDebouncedKeyword] = useState('')
+  const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
+  const [certLevelFilter, setCertLevelFilter] = useState<string>('all')
+  const [certSubjectFilter, setCertSubjectFilter] = useState<string>('all')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [view, setView] = useState<'table' | 'kanban'>('table')
+  const [batchBusy, setBatchBusy] = useState(false)
+
+  // ---- 服务端分页状态 ----
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [rows, setRows] = useState<Resume[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [refreshTick, setRefreshTick] = useState(0)
+  const refresh = () => setRefreshTick((t) => t + 1)
+
+  const { visibleCols, sort, toggleCol, toggleSort, visibleColumns } = useColumnPrefs()
+
+  // 搜索框 300ms 防抖 → API q 参数
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedKeyword(keyword.trim()), 300)
+    return () => clearTimeout(t)
+  }, [keyword])
+
+  // 筛选条件变化回到第一页
+  useEffect(() => {
+    setPage(1)
+  }, [debouncedKeyword, stageFilter, certLevelFilter, certSubjectFilter, pool, pageSize])
+
+  // 服务端分页查询（索引行 → 部分字段候选人，展示列均有索引列覆盖）
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    candidatesQuery({
+      page,
+      size: pageSize,
+      stage: stageFilter !== 'all' ? (stageFilter as Stage) : undefined,
+      owner: pool === 'pool' ? 'none' : currentUser.id,
+      certLevel: certLevelFilter !== 'all' ? certLevelFilter : undefined,
+      certSubject: certSubjectFilter !== 'all' ? certSubjectFilter : undefined,
+      q: debouncedKeyword || undefined,
+      sort: 'updated_at_desc',
+    })
+      .then((res) => {
+        if (cancelled) return
+        setTotal(res.total)
+        setRows(res.items.map(partialResumeFromIndex))
+      })
+      .catch((e) => {
+        if (!cancelled) toast.error(e instanceof Error ? e.message : '加载简历列表失败')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [page, pageSize, stageFilter, certLevelFilter, certSubjectFilter, pool, debouncedKeyword, refreshTick, currentUser.id, candidatesQuery])
+
+  /** 我锁定的简历数量（个人库角标，服务端计数） */
+  const [myLockedCount, setMyLockedCount] = useState(0)
+  useEffect(() => {
+    let cancelled = false
+    candidatesQuery({ owner: currentUser.id, size: 1 })
+      .then((res) => {
+        if (!cancelled) setMyLockedCount(res.total)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser.id, candidatesQuery, refreshTick])
+
+  // 教资科目选项：来自索引行镜像（去重）
+  const certSubjects = useMemo(
+    () => [...new Set(resumes.map((r) => r.certSubject).filter(Boolean))].sort(),
+    [resumes],
+  )
+
+  const sorted = sortRows(rows, sort)
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  const selectedIds = [...selected]
+  const allChecked = rows.length > 0 && rows.every((r) => selected.has(r.id))
+
+  const toggleAll = (checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (checked) rows.forEach((r) => next.add(r.id))
+      else rows.forEach((r) => next.delete(r.id))
+      return next
+    })
+  }
+  const toggleOne = (id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  /** 批量操作前：把选中的候选人完整记录水合进本地（编辑必须基于完整 doc，不能基于索引行） */
+  const hydrateSelected = async () => {
+    await Promise.all(selectedIds.map((id) => candidateDetail(id)))
+  }
+
+  const batchAssign = async (assigneeId: string | null) => {
+    if (batchBusy) return
+    setBatchBusy(true)
+    try {
+      await hydrateSelected()
+      dispatch({ type: 'assign', ids: selectedIds, assigneeId, actorId: currentUser.id })
+      toast.success(`已将 ${selectedIds.length} 份简历${assigneeId ? `分配给 ${users.find((u) => u.id === assigneeId)?.name}` : '取消分配'}`)
+      setSelected(new Set())
+      // 回写由 store 的变更冲刷负责（800ms 合并），延迟刷新列表
+      setTimeout(refresh, 1500)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '批量分配失败')
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const batchStage = async (stage: Stage) => {
+    if (batchBusy) return
+    setBatchBusy(true)
+    try {
+      await hydrateSelected()
+      const full = selectedIds.map((id) => resumes.find((r) => r.id === id)).filter((r): r is Resume => !!r)
+      const lockedCount = stage === 'rejected' ? full.filter((r) => r.jobId).length : 0
+      dispatch({ type: 'updateStage', ids: selectedIds, stage, actorId: currentUser.id })
+      toast.success(
+        `已将 ${selectedIds.length} 份简历移至「${STAGE_LABELS[stage]}」${lockedCount > 0 ? `，其中 ${lockedCount} 份已锁定简历已同步释放锁定` : ''}`,
+      )
+      setSelected(new Set())
+      setTimeout(refresh, 1500)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '批量改阶段失败')
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  /** 批量导出所选：拉完整 doc 后导出（索引行缺电话/邮箱等字段） */
+  const batchExportSelected = async () => {
+    if (batchBusy) return
+    setBatchBusy(true)
+    try {
+      const full = await Promise.all(selectedIds.map((id) => candidateDetail(id)))
+      downloadCSV(`简历导出-所选${full.length}份-${new Date().toISOString().slice(0, 10)}.csv`, resumesToCSV(full, users))
+      toast.success(`已导出所选 ${full.length} 份简历`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导出失败')
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  /** 导出当前筛选结果：先按筛选翻页收集 id（上限 500），再逐个拉完整 doc 导出 */
+  const exportFiltered = async () => {
+    if (batchBusy) return
+    setBatchBusy(true)
+    const EXPORT_CAP = 500
+    try {
+      const ids: string[] = []
+      let p = 1
+      let t = 0
+      do {
+        const res = await candidatesQuery({
+          page: p,
+          size: 200,
+          stage: stageFilter !== 'all' ? (stageFilter as Stage) : undefined,
+          owner: pool === 'pool' ? 'none' : currentUser.id,
+          certLevel: certLevelFilter !== 'all' ? certLevelFilter : undefined,
+          certSubject: certSubjectFilter !== 'all' ? certSubjectFilter : undefined,
+          q: debouncedKeyword || undefined,
+          sort: 'updated_at_desc',
+        })
+        t = res.total
+        ids.push(...res.items.map((i) => i.id))
+        p++
+      } while (ids.length < t && ids.length < EXPORT_CAP && p < 50)
+      if (t > EXPORT_CAP) toast.warning(`共 ${t} 份匹配，导出前 ${EXPORT_CAP} 份（请用筛选缩小范围）`)
+      const useIds = ids.slice(0, EXPORT_CAP)
+      const full: Resume[] = []
+      // 并发 5 拉取完整记录
+      let cursor = 0
+      await Promise.all(
+        Array.from({ length: Math.min(5, useIds.length) }, async () => {
+          while (cursor < useIds.length) {
+            const id = useIds[cursor++]
+            full.push(await candidateDetail(id))
+          }
+        }),
+      )
+      downloadCSV(`简历导出-${new Date().toISOString().slice(0, 10)}.csv`, resumesToCSV(full, users))
+      toast.success(`已导出 ${full.length} 份简历`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '导出失败')
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  // ---- 详情抽屉：按需加载完整 doc 解密（水合后从 store 读取，编辑实时反映） ----
+  const [readyIds, setReadyIds] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    if (!detailId || readyIds.has(detailId)) return
+    let cancelled = false
+    candidateDetail(detailId)
+      .then(() => {
+        if (!cancelled) setReadyIds((prev) => new Set(prev).add(detailId))
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          toast.error(e instanceof Error ? e.message : '加载简历详情失败')
+          setDetailId(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [detailId, readyIds, candidateDetail])
+  const detailStoreResume = resumes.find((r) => r.id === detailId) ?? null
+  const detailResume = detailId && readyIds.has(detailId) ? detailStoreResume : null
+
+  /** 打开对比前水合选中记录 */
+  const openCompare = async () => {
+    await Promise.all(selectedIds.map((id) => candidateDetail(id).catch(() => null)))
+    setCompareOpen(true)
+  }
+
+  return (
+    <div className="space-y-5 p-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">{pool === 'pool' ? '总简历库' : '我的简历库'}</h1>
+          <p className="text-sm text-slate-500">
+            {pool === 'pool' ? `共 ${total} 份未锁定简历` : `我锁定的 ${total} 份简历，面试不通过或放弃入职释放后自动退回总库`}
+            {selectedIds.length > 0 && `，已选 ${selectedIds.length} 份`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <ToggleGroup type="single" value={pool} onValueChange={(v) => v && setPool(v as 'pool' | 'mine')} variant="outline">
+            <ToggleGroupItem value="pool" className="gap-1 px-3"><Contact className="h-4 w-4" />总简历库</ToggleGroupItem>
+            <ToggleGroupItem value="mine" className="gap-1 px-3">
+              <Lock className="h-4 w-4" />我的简历库{myLockedCount > 0 && <span className="ml-0.5 rounded-full bg-cyan-100 px-1.5 text-[10px] font-semibold text-cyan-700">{myLockedCount}</span>}
+            </ToggleGroupItem>
+          </ToggleGroup>
+          <ToggleGroup type="single" value={view} onValueChange={(v) => v && setView(v as 'table' | 'kanban')} variant="outline">
+            <ToggleGroupItem value="table" aria-label="表格视图"><List className="h-4 w-4" /></ToggleGroupItem>
+            <ToggleGroupItem value="kanban" aria-label="看板视图"><LayoutGrid className="h-4 w-4" /></ToggleGroupItem>
+          </ToggleGroup>
+          <Button variant="outline" disabled={batchBusy} onClick={exportFiltered}>
+            {batchBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}导出
+          </Button>
+          <Button variant="outline" asChild>
+            <Link to="/ai-parse"><Sparkles className="mr-2 h-4 w-4" />AI 解析</Link>
+          </Button>
+          <Button asChild>
+            <Link to="/import"><FileUp className="mr-2 h-4 w-4" />批量导入</Link>
+          </Button>
+        </div>
+      </div>
+
+      {/* 筛选栏（全部映射到 API 查询参数） */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative w-64">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <Input className="pl-9" placeholder="搜索姓名 / 学校 / 专业 / 技能" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+        </div>
+        {view === 'table' && (
+          <Select value={stageFilter} onValueChange={setStageFilter}>
+            <SelectTrigger className="w-36"><SelectValue placeholder="阶段" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部阶段</SelectItem>
+              {STAGE_ORDER.map((s) => <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
+        <Select value={certLevelFilter} onValueChange={setCertLevelFilter}>
+          <SelectTrigger className="w-36"><SelectValue placeholder="教资学段" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部学段</SelectItem>
+            {CERT_STAGES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={certSubjectFilter} onValueChange={setCertSubjectFilter}>
+          <SelectTrigger className="w-36"><SelectValue placeholder="教资科目" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部科目</SelectItem>
+            {certSubjects.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        {view === 'table' && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm"><Columns3 className="mr-1 h-3.5 w-3.5" />列设置</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-40">
+              <DropdownMenuLabel>显示列</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {COLUMNS.filter((c) => !c.fixed).map((c) => (
+                <DropdownMenuCheckboxItem
+                  key={c.key}
+                  checked={visibleCols.has(c.key)}
+                  onCheckedChange={(v) => toggleCol(c.key, !!v)}
+                  onSelect={(e) => e.preventDefault()}
+                >
+                  {c.label}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        {(keyword || stageFilter !== 'all' || certLevelFilter !== 'all' || certSubjectFilter !== 'all') && (
+          <Button variant="ghost" size="sm" onClick={() => { setKeyword(''); setStageFilter('all'); setCertLevelFilter('all'); setCertSubjectFilter('all') }}>
+            <RefreshCw className="mr-1 h-3.5 w-3.5" />重置
+          </Button>
+        )}
+      </div>
+
+      {/* 批量操作栏 */}
+      {view === 'table' && selectedIds.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2.5">
+          <span className="text-sm font-medium text-indigo-700">已选 {selectedIds.length} 份</span>
+          {batchBusy && <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />}
+          <Select onValueChange={(v) => void batchAssign(v === 'none' ? null : v)}>
+            <SelectTrigger className="h-8 w-40 bg-white"><SelectValue placeholder={<span className="flex items-center gap-1"><UserPlus className="h-3.5 w-3.5" />分配给…</span>} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">取消分配</SelectItem>
+              {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select onValueChange={(v) => void batchStage(v as Stage)}>
+            <SelectTrigger className="h-8 w-40 bg-white"><SelectValue placeholder="移动到阶段…" /></SelectTrigger>
+            <SelectContent>
+              {STAGE_ORDER.filter((s) => s !== 'matched').map((s) => <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" className="bg-white" disabled={batchBusy} onClick={() => void batchExportSelected()}>
+            <Download className="mr-1 h-3.5 w-3.5" />导出所选
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-white"
+            disabled={selectedIds.length < 2 || selectedIds.length > 4 || batchBusy}
+            title="勾选 2-4 份简历进行并排对比"
+            onClick={() => void openCompare()}
+          >
+            <GitCompareArrows className="mr-1 h-3.5 w-3.5" />对比（{selectedIds.length}）
+          </Button>
+          <Button variant="destructive" size="sm" disabled={batchBusy} onClick={() => setConfirmDelete(true)}>
+            <Trash2 className="mr-1 h-3.5 w-3.5" />删除
+          </Button>
+        </div>
+      )}
+
+      {/* 看板视图（按阶段懒加载，总库/个人库映射 owner 参数） */}
+      {view === 'kanban' && (
+        <ResumesKanban resumes={rows} owner={pool === 'pool' ? 'none' : currentUser.id} onCardClick={setDetailId} />
+      )}
+
+      {/* 表格视图（服务端分页） */}
+      {view === 'table' && (
+      <div className="space-y-3">
+      <div className="overflow-x-auto rounded-lg border bg-white">
+        <Table className="min-w-[1280px]">
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">
+                <Checkbox checked={allChecked} onCheckedChange={(c) => toggleAll(!!c)} />
+              </TableHead>
+              {visibleColumns.map((col) => (
+                <TableHead key={col.key}>
+                  {col.sortKey ? (
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 hover:text-slate-900"
+                      onClick={() => toggleSort(col.sortKey as SortKey)}
+                      title="点击切换排序（升序 → 降序 → 取消），仅对当前页生效"
+                    >
+                      {col.label}
+                      {sort?.key === col.sortKey ? (
+                        sort.dir === 'asc'
+                          ? <ArrowUp className="h-3 w-3 text-indigo-600" />
+                          : <ArrowDown className="h-3 w-3 text-indigo-600" />
+                      ) : (
+                        <ArrowUpDown className="h-3 w-3 text-slate-300" />
+                      )}
+                    </button>
+                  ) : (
+                    col.label
+                  )}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map((r: Resume) => (
+              <TableRow key={r.id} className="cursor-pointer" onClick={() => setDetailId(r.id)}>
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <Checkbox checked={selected.has(r.id)} onCheckedChange={(c) => toggleOne(r.id, !!c)} />
+                </TableCell>
+                {visibleColumns.map((col) => (
+                  <TableCell key={col.key}>{renderCell(col.key, r, users, jobs)}</TableCell>
+                ))}
+              </TableRow>
+            ))}
+            {sorted.length === 0 && !loading && (
+              <TableRow>
+                <TableCell colSpan={visibleColumns.length + 1} className="py-12 text-center text-slate-400">
+                  没有符合条件的简历，试试调整筛选条件或<Link to="/import" className="text-indigo-600 hover:underline">批量导入</Link>
+                </TableCell>
+              </TableRow>
+            )}
+            {loading && (
+              <TableRow>
+                <TableCell colSpan={visibleColumns.length + 1} className="py-12 text-center text-slate-400">
+                  <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />加载中…
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* 分页栏 */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm text-slate-500">共 {total} 份 · 第 {page} / {pageCount} 页</span>
+        <div className="flex items-center gap-2">
+          <Select value={String(pageSize)} onValueChange={(v) => setPageSize(Number(v))}>
+            <SelectTrigger className="h-8 w-28"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[20, 50, 100, 200].map((n) => <SelectItem key={n} value={String(n)}>{n} 条/页</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+            <ChevronLeft className="mr-1 h-4 w-4" />上一页
+          </Button>
+          <Button variant="outline" size="sm" disabled={page >= pageCount || loading} onClick={() => setPage((p) => Math.min(pageCount, p + 1))}>
+            下一页<ChevronRight className="ml-1 h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+      </div>
+      )}
+
+      <ResumeDetail resume={detailResume} open={!!detailResume} onOpenChange={(o) => !o && setDetailId(null)} onSelectResume={setDetailId} />
+
+      <CompareDialog
+        resumes={selectedIds.map((id) => resumes.find((r) => r.id === id)).filter((r): r is Resume => !!r)}
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        onView={(id) => {
+          setCompareOpen(false)
+          setDetailId(id)
+        }}
+      />
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除 {selectedIds.length} 份简历？</AlertDialogTitle>
+            <AlertDialogDescription>删除后不可恢复，相关的备注与动态也会一并删除。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-rose-600 hover:bg-rose-700"
+              onClick={() => {
+                void (async () => {
+                  await deleteCandidates(selectedIds)
+                  // 同步清理本机 IndexedDB 中的简历原件（失败静默忽略）
+                  selectedIds.forEach((id) => void deleteResumeFile(id))
+                  toast.success(`已删除 ${selectedIds.length} 份简历`)
+                  setSelected(new Set())
+                  refresh()
+                })()
+              }}
+            >
+              确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+// =====================================================================
+// 信封兼容模式（legacy）：旧本地整库逻辑，原样保留
+// =====================================================================
+
+function ResumesLegacy() {
+  const { resumes, users, jobs, currentUser, dispatch } = useStore()
+  const [searchParams] = useSearchParams()
+  const [pool, setPool] = useState<'pool' | 'mine'>((searchParams.get('pool') as 'pool' | 'mine') ?? 'pool')
+  const [keyword, setKeyword] = useState('')
+  const [stageFilter, setStageFilter] = useState<string>(searchParams.get('stage') ?? 'all')
+  const [assigneeFilter, setAssigneeFilter] = useState<string>(searchParams.get('assignee') ?? 'all')
+  const [positionFilter, setPositionFilter] = useState<string>('all')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
+  const [view, setView] = useState<'table' | 'kanban'>('table')
+
+  const positions = useMemo(() => [...new Set(resumes.map((r) => r.position))].sort(), [resumes])
+
+  /** 我锁定的简历数量（个人库角标） */
+  const myLockedCount = useMemo(
+    () => resumes.filter((r) => r.jobId && r.lockedBy === currentUser.id).length,
+    [resumes, currentUser.id],
+  )
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase()
+    // 可调配口径：stage ∈ {imported, screening, rejected} 且未锁定岗位（jobId 为空），
+    // 明确排除 matched/interview/offered/onboarded/offboarded/blacklisted
+    return resumes.filter((r) => {
+      // 总简历库只显示可调配简历（明确按阶段筛选时除外，便于从仪表盘下钻查看）；
+      // 个人库只显示我锁定的简历
+      if (pool === 'pool' && stageFilter === 'all' && !deployable(r)) return false
+      if (pool === 'mine' && !(r.jobId && r.lockedBy === currentUser.id)) return false
+      if (kw && ![r.name, r.phone, r.email, r.position, r.university, r.company, r.major, r.hometown, r.certSubject, r.certStage, ...r.skills, ...r.tags, ...r.certificates].join(' ').toLowerCase().includes(kw)) return false
+      if (stageFilter !== 'all' && r.stage !== stageFilter) return false
+      if (assigneeFilter === 'me' && r.assigneeId !== currentUser.id) return false
+      if (assigneeFilter === 'unassigned' && r.assigneeId) return false
+      if (assigneeFilter !== 'all' && assigneeFilter !== 'me' && assigneeFilter !== 'unassigned' && r.assigneeId !== assigneeFilter) return false
+      if (positionFilter !== 'all' && r.position !== positionFilter) return false
+      return true
+    })
+  }, [resumes, keyword, pool, stageFilter, assigneeFilter, positionFilter, currentUser.id])
+
+  // 列显示定制与表头排序（偏好持久化到 localStorage）
+  const { visibleCols, sort, toggleCol, toggleSort, visibleColumns } = useColumnPrefs()
+
+  /** 排序后的列表：0 值（年龄/毕业年份未知）始终排最后 */
+  const sorted = useMemo(() => sortRows(filtered, sort), [filtered, sort])
 
   const selectedIds = [...selected].filter((id) => filtered.some((r) => r.id === id))
   const allChecked = filtered.length > 0 && filtered.every((r) => selected.has(r.id))
@@ -214,93 +827,6 @@ export default function Resumes() {
     const rows = resumes.filter((r) => selectedIds.includes(r.id))
     downloadCSV(`简历导出-所选${rows.length}份-${new Date().toISOString().slice(0, 10)}.csv`, resumesToCSV(rows, users))
     toast.success(`已导出所选 ${rows.length} 份简历`)
-  }
-
-  /** 单元格渲染：按列 key 分发（姓名列固定，其余列可在「列设置」中隐藏） */
-  const renderCell = (col: ColKey, r: Resume): ReactNode => {
-    const assignee = users.find((u) => u.id === r.assigneeId)
-    const job = jobs.find((j) => j.id === r.jobId)
-    switch (col) {
-      case 'name':
-        return (
-          <>
-            <div className="flex items-center gap-1.5 font-medium">
-              {r.name}
-              {r.rating > 0 && (
-                <span className="flex items-center" title={`评分 ${r.rating}/5`}>
-                  {Array.from({ length: r.rating }).map((_, i) => (
-                    <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-400" />
-                  ))}
-                </span>
-              )}
-            </div>
-            <div className="text-xs text-slate-400">{r.phone}</div>
-          </>
-        )
-      case 'age':
-        return <span className="text-slate-600">{r.age > 0 ? `${r.age} 岁` : '—'}</span>
-      case 'certStage':
-        return r.certStage ? (
-          <Badge variant="outline" className="bg-teal-50 text-teal-700 border-teal-200">{r.certStage}</Badge>
-        ) : r.certQualified ? (
-          <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200" title={r.certNote || '持教师资格考试合格证明'}>合格证明</Badge>
-        ) : (
-          <span className="text-xs text-slate-400">无证</span>
-        )
-      case 'certSubject':
-        return <span className="text-slate-600">{r.certSubject || '—'}</span>
-      case 'gradYear':
-        return <span className="text-slate-600">{r.gradYear > 0 ? r.gradYear : '—'}</span>
-      case 'hometown':
-        return <span className="text-slate-600">{r.hometown || '—'}</span>
-      case 'university':
-        return (
-          <div className="max-w-[160px]">
-            <div className="truncate text-slate-700">{r.university || '—'}</div>
-            {r.fullTime !== '未知' && (
-              <Badge variant="outline" className={`mt-0.5 text-[10px] ${r.fullTime === '全日制' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
-                {r.fullTime}
-              </Badge>
-            )}
-          </div>
-        )
-      case 'major':
-        return <span className="block max-w-[120px] truncate text-slate-600">{r.major || '—'}</span>
-      case 'experience':
-        return <span className="text-slate-600">{r.experience} 年</span>
-      case 'tags':
-        return (
-          <div className="flex max-w-[150px] flex-wrap gap-1">
-            {r.tags.slice(0, 2).map((t) => (
-              <Badge key={t} variant="outline" className={`text-[11px] ${tagColor(t)}`}>{t}</Badge>
-            ))}
-            {r.tags.length > 2 && <span className="text-[11px] text-slate-400">+{r.tags.length - 2}</span>}
-          </div>
-        )
-      case 'stage':
-        return <Badge variant="outline" className={STAGE_COLORS[r.stage]}>{STAGE_LABELS[r.stage]}</Badge>
-      case 'job':
-        return job ? (
-          <span className="flex items-center gap-1 text-xs text-cyan-700">
-            <Lock className="h-3 w-3" />{job.school}·{job.level}{job.subject}
-          </span>
-        ) : (
-          <span className="text-xs text-slate-300">—</span>
-        )
-      case 'assignee':
-        return assignee ? (
-          <span className="flex items-center gap-2">
-            <Avatar className="h-6 w-6">
-              <AvatarFallback style={{ backgroundColor: assignee.color, color: '#fff', fontSize: 11 }}>{assignee.name.slice(0, 1)}</AvatarFallback>
-            </Avatar>
-            <span className="text-sm">{assignee.name}</span>
-          </span>
-        ) : (
-          <span className="text-sm text-slate-400">未分配</span>
-        )
-      case 'createdAt':
-        return <span className="text-xs text-slate-500">{new Date(r.createdAt).toLocaleDateString('zh-CN')}</span>
-    }
   }
 
   return (
@@ -482,7 +1008,7 @@ export default function Resumes() {
                   <Checkbox checked={selected.has(r.id)} onCheckedChange={(c) => toggleOne(r.id, !!c)} />
                 </TableCell>
                 {visibleColumns.map((col) => (
-                  <TableCell key={col.key}>{renderCell(col.key, r)}</TableCell>
+                  <TableCell key={col.key}>{renderCell(col.key, r, users, jobs)}</TableCell>
                 ))}
               </TableRow>
             ))}

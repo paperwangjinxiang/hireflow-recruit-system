@@ -51,7 +51,7 @@ interface ManifestV3 {
 }
 
 /** 加密信封：gzip 后的 payload 经 AES-GCM 加密（iv/data 为 hex） */
-interface SyncEnvelope {
+export interface SyncEnvelope {
   v: 2
   enc: true
   iv: string
@@ -298,9 +298,44 @@ async function decryptEnvelope(envelope: SyncEnvelope): Promise<SharedState | 'l
 }
 
 /** 判断对象是否为加密信封 */
-function isEnvelope(data: unknown): data is SyncEnvelope {
+export function isEnvelope(data: unknown): data is SyncEnvelope {
   const d = data as SyncEnvelope | null
   return !!d && d.v === 2 && d.enc === true && typeof d.data === 'string'
+}
+
+// ---- 通用 JSON 信封加解密（候选人分表 doc 复用同一套 envelope v2 方案） ----
+
+/** 加密任意 JSON 对象为 envelope v2（json → gzip → AES-GCM）；口令为空返回 null */
+export async function encryptJsonEnvelope(value: unknown, passphrase: string): Promise<SyncEnvelope | null> {
+  const derived = await deriveSyncKey(passphrase)
+  if (!derived) return null
+  const gzipped = await compressToBytes(JSON.stringify(value))
+  const iv = new Uint8Array(12)
+  crypto.getRandomValues(iv)
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derived.key, gzipped as BufferSource)
+  return { v: 2, enc: true, iv: toHex(iv), fp: derived.fingerprint, data: toHex(new Uint8Array(cipher)) }
+}
+
+/**
+ * 解密 envelope v2 为 JSON 对象（AES-GCM → gunzip → JSON.parse）。
+ * 返回 null 表示结构异常/指纹不匹配/解密失败（口令错误或数据损坏）。
+ */
+export async function decryptJsonEnvelope(envelope: SyncEnvelope, passphrase: string): Promise<unknown | null> {
+  if (!isEnvelope(envelope) || typeof envelope.iv !== 'string') return null
+  const derived = await deriveSyncKey(passphrase)
+  if (!derived) return null
+  if (typeof envelope.fp === 'string' && envelope.fp && envelope.fp !== derived.fingerprint) return null
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromHex(envelope.iv) as BufferSource },
+      derived.key,
+      fromHex(envelope.data) as BufferSource,
+    )
+    const textBytes = await decompressToBytes(new Uint8Array(plain))
+    return JSON.parse(new TextDecoder().decode(textBytes)) as unknown
+  } catch {
+    return null
+  }
 }
 
 /** 创建分片 blob，返回其 id；失败返回 null */

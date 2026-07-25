@@ -7,12 +7,13 @@ import { getLlmConfig, isVisionReady, ocrWithVision } from '@/lib/llm'
 // 升级 pdfjs-dist 后需同步执行：cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/
 pdfjs.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs'
 
-export type ResumeFileKind = 'pdf' | 'docx' | 'text'
+export type ResumeFileKind = 'pdf' | 'docx' | 'doc' | 'text'
 
 export function detectKind(fileName: string): ResumeFileKind | null {
   const ext = fileName.split('.').pop()?.toLowerCase()
   if (ext === 'pdf') return 'pdf'
-  if (ext === 'docx' || ext === 'doc') return 'docx'
+  if (ext === 'docx') return 'docx'
+  if (ext === 'doc') return 'doc'
   if (['txt', 'md', 'text', 'csv', 'json'].includes(ext ?? '')) return 'text'
   return null
 }
@@ -467,15 +468,21 @@ async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => voi
 }
 
 async function extractDocx(buffer: ArrayBuffer, fileName: string): Promise<string> {
-  // mammoth 只支持 .docx；老式 .doc 二进制格式无法解析
+  // mammoth 只支持 .docx；老式 .doc 二进制格式走 word-extractor（见 extractLegacyDoc）
   if (fileName.toLowerCase().endsWith('.doc') && !fileName.toLowerCase().endsWith('.docx')) {
-    throw new Error('暂不支持老式 .doc 格式，请在 Word 中另存为 .docx 后重新上传')
+    return extractLegacyDoc(buffer)
   }
   const result = await mammoth.extractRawText({ arrayBuffer: buffer })
   return result.value
 }
 
-/** 从文件中提取纯文本（PDF / DOCX / 纯文本；扫描页 PDF 自动走 OCR）；单文件 >20MB 直接拒绝 */
+/** 老式二进制 Word（.doc, OLE2/CFB 格式）：word-extractor 提取正文纯文本 */
+async function extractLegacyDoc(buffer: ArrayBuffer): Promise<string> {
+  const { extractLegacyDocText } = await import('@/lib/legacy-doc')
+  return extractLegacyDocText(buffer)
+}
+
+/** 从文件中提取纯文本（PDF / DOCX / DOC / 纯文本；扫描页 PDF 自动走 OCR）；单文件 >20MB 直接拒绝 */
 export async function extractText(file: File, onProgress?: (msg: string) => void): Promise<ExtractResult> {
   const kind = detectKind(file.name)
   if (!kind) throw new Error(`不支持的文件格式：${file.name}`)
@@ -483,5 +490,6 @@ export async function extractText(file: File, onProgress?: (msg: string) => void
   if (kind === 'text') return { text: await file.text(), warnings: [] }
   const buffer = await file.arrayBuffer()
   if (kind === 'pdf') return extractPdf(buffer, onProgress)
+  if (kind === 'doc') return { text: await extractLegacyDoc(buffer), warnings: [] }
   return { text: await extractDocx(buffer, file.name), warnings: [] }
 }

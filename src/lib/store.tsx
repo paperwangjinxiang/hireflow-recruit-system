@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
 import type { Activity, Interview, Job, Resume, Role, Stage, User, UserStatus } from '@/types'
-import { STAGE_LABELS, RESULT_LABELS } from '@/types'
+import { STAGE_LABELS, STAGE_ORDER, RESULT_LABELS } from '@/types'
 import { SEED_USERS, seedResumes, seedInterviews, seedJobs } from '@/lib/seed'
 import { normalizeResume, normalizeUser } from '@/lib/tags'
 import { checkCertFit } from '@/lib/match'
@@ -9,6 +9,18 @@ import { validateSharedState } from '@/lib/remote-schema'
 import {
   getClientId, getSyncUrl, pullRemote, pushRemote, setSyncPassphrase, setSyncUrl, type SharedState,
 } from '@/lib/sync'
+import {
+  list as candidatesList,
+  get as candidatesGet,
+  upsert as candidatesUpsert,
+  bulkUpsert as candidatesBulkUpsert,
+  remove as candidatesRemove,
+  healthCheck as candidatesHealthCheck,
+  onCandidatesDegraded,
+  partialResumeFromIndex,
+  type CandidateListParams,
+  type CandidateListResult,
+} from '@/lib/candidates'
 
 interface State {
   users: User[]
@@ -48,6 +60,10 @@ type Action =
   | { type: 'setApplyPrivateKey'; privateKey: string }
   | { type: 'setRating'; id: string; rating: number }
   | { type: 'resetData' }
+  /** 候选人分表：水合远端数据合并进本地（replace=true 时整体替换，用于 API 模式首轮水合） */
+  | { type: 'hydrateResumes'; resumes: Resume[]; replace?: boolean }
+  /** 候选人分表：本地乐观 upsert（API 写入由 store 的脏数据冲刷负责） */
+  | { type: 'upsertResumeLocal'; resume: Resume }
 
 export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 
@@ -493,6 +509,25 @@ function reducer(state: State, action: Action): State {
     case 'resetData': {
       return seedState(state.currentUserId)
     }
+    case 'hydrateResumes': {
+      // 候选人分表：远端水合。replace=true 整体替换（API 模式首轮索引行水合）；
+      // 否则按 id 合并（已存在的整条替换，新 id 追加），不触碰未涉及的本地记录
+      if (action.replace) return { ...state, resumes: action.resumes }
+      const incoming = new Map(action.resumes.map((r) => [r.id, r]))
+      const merged = state.resumes.map((r) => incoming.get(r.id) ?? r)
+      const existing = new Set(state.resumes.map((r) => r.id))
+      const appended = action.resumes.filter((r) => !existing.has(r.id))
+      return { ...state, resumes: [...merged, ...appended] }
+    }
+    case 'upsertResumeLocal': {
+      const exists = state.resumes.some((r) => r.id === action.resume.id)
+      return {
+        ...state,
+        resumes: exists
+          ? state.resumes.map((r) => (r.id === action.resume.id ? action.resume : r))
+          : [action.resume, ...state.resumes],
+      }
+    }
     case 'applyRemote': {
       const currentUserId = action.users.some((u) => u.id === state.currentUserId)
         ? state.currentUserId
@@ -536,6 +571,24 @@ interface StoreValue extends State {
   forcePush: () => Promise<void>
   syncUrl: string
   setCustomSyncUrl: (url: string) => void
+  // ---- 候选人分表 API（resumes 不再走整库信封） ----
+  /** 候选人存储模式：unknown=检测中；api=候选人分表 API；legacy=旧信封兼容模式（API 不可用时自动降级） */
+  candidatesMode: 'unknown' | 'api' | 'legacy'
+  /** 服务端分页查询候选人索引行（legacy 模式为本地过滤同构返回） */
+  candidatesQuery: (params: CandidateListParams) => Promise<CandidateListResult>
+  /** 按需加载完整候选人（拉 doc 解密，api 模式水合进本地缓存） */
+  candidateDetail: (id: string) => Promise<Resume>
+  /** 各阶段候选人计数（看板列头；api 模式逐阶段 size=1 查 total，15 秒缓存） */
+  stageCounts: () => Promise<Record<Stage, number>>
+  /** 写入单条候选人（本地乐观更新 + API upsert；legacy 模式只写本地走信封） */
+  updateCandidate: (resume: Resume) => Promise<void>
+  /** 删除候选人（本地 + API 逐条删除） */
+  deleteCandidates: (ids: string[]) => Promise<void>
+  /** 重新拉取候选人索引行镜像（仪表盘/进展页统计的数据来源） */
+  refreshCandidatesMirror: () => Promise<void>
+  /** 候选人总数（api 模式）与镜像是否被截断（总数 >5000 时镜像仅前 5000 条索引行） */
+  candidatesTotal: number | null
+  candidatesMirrorCapped: boolean
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
@@ -581,7 +634,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const dispatch = useMemo<React.Dispatch<Action>>(
     () => (action) => {
-      if (action.type !== 'applyRemote') {
+      // applyRemote 是远端应用；hydrate/upsertLocal 是候选人分表的水合/缓存写入，
+      // 均不产生「待推送信封」的脏标记（api 模式简历已不走信封，legacy 模式不使用这两个 action）
+      if (action.type !== 'applyRemote' && action.type !== 'hydrateResumes' && action.type !== 'upsertResumeLocal') {
         dirtyRef.current = true
         persistSyncMarks(true)
       }
@@ -589,6 +644,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [],
   )
+
+  // ---- 候选人分表 API：模式检测 / 索引行镜像 / 变更回写 ----
+  const [candidatesMode, setCandidatesModeState] = useState<'unknown' | 'api' | 'legacy'>('unknown')
+  // 模式的 ref 镜像：异步回调（doPush/pullAndApply 等）需要同步读取当前模式
+  const candidatesModeRef = useRef<'unknown' | 'api' | 'legacy'>('unknown')
+  const setCandidatesMode = (m: 'unknown' | 'api' | 'legacy') => {
+    candidatesModeRef.current = m
+    setCandidatesModeState(m)
+  }
+  const [candidatesTotal, setCandidatesTotal] = useState<number | null>(null)
+  const [candidatesMirrorCapped, setCandidatesMirrorCapped] = useState(false)
+  /** 完整候选人内存缓存（candidateDetail 按需加载 + 回写后更新） */
+  const detailCacheRef = useRef(new Map<string, Resume>())
+  /** id → 已确认写入 API 的 updatedAt（防止水合数据被回写覆盖） */
+  const flushedRef = useRef(new Map<string, number>())
+  /** 索引行「部分记录」id 集合：这些对象缺 doc 字段，绝不可回写 API */
+  const partialIdsRef = useRef(new Set<string>())
+  /** 首轮索引行镜像是否已就绪（就绪前不回写，避免把本地旧缓存当新数据推上去） */
+  const mirrorReadyRef = useRef(false)
+  /** 阶段计数短缓存（看板列头，避免每次渲染发 9 个请求） */
+  const stageCountsCacheRef = useRef<{ at: number; counts: Record<Stage, number> } | null>(null)
+  /** 正在回写中的 id（防止并发重复 upsert） */
+  const flushInflightRef = useRef(new Set<string>())
+  /** 索引行镜像上限：超过则截断并在仪表盘提示（防 5 万条全量进内存） */
+  const MIRROR_CAP = 5000
 
   // doPush 冲突分支需要回调 pullAndApply（两者互相依赖，用 ref 打破循环）
   // 返回值表示是否成功拉取并应用（force=true 时跳过 dirty 竞态防护，供冲突分支使用）
@@ -600,7 +680,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       pushingRef.current = true
       setSyncStatus('syncing')
       const { users, resumes, interviews, jobs, applyPrivateKey } = stateRef.current
-      const shared: SharedState = { users, resumes, interviews, jobs, applyPrivateKey }
+      // api 模式：候选人走分表 API，信封只同步 users/jobs/interviews/设置等小数据
+      const shared: SharedState = {
+        users,
+        resumes: candidatesModeRef.current === 'api' ? [] : resumes,
+        interviews,
+        jobs,
+        applyPrivateKey,
+      }
       const result = await pushRemote(shared, clientIdRef.current, lastRemoteRef.current)
       pushingRef.current = false
       if (result.status === 'pushed') {
@@ -668,7 +755,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           persistSyncMarks(false, payload.updatedAt)
           syncLockedRef.current = false
           setSyncLocked(false)
-          baseDispatch({ type: 'applyRemote', ...validation.state })
+          // api 模式：信封中的 resumes 不再权威（候选人走分表 API），保留本地候选人缓存不被信封覆盖
+          baseDispatch({
+            type: 'applyRemote',
+            ...validation.state,
+            resumes: candidatesModeRef.current === 'api' ? stateRef.current.resumes : validation.state.resumes,
+          })
         } else {
           lastRemoteRef.current = payload.updatedAt
           persistSyncMarks(false, payload.updatedAt)
@@ -700,7 +792,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // 本地变更后 5 秒防抖推送（放宽防抖窗口，降低对公共存储端的请求放大）
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, resumes: sanitizeResumesForPersist(state.resumes) }))
+      // api 模式：简历不写入本机 localStorage 缓存（数据量大且以候选人 API 为准），避免配额溢出
+      const resumesToPersist = candidatesModeRef.current === 'api' ? [] : sanitizeResumesForPersist(state.resumes)
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, resumes: resumesToPersist }))
     } catch (e) {
       // 存储配额满：告警一次（不刷屏），不阻断使用（云端同步仍可进行）
       if (isQuotaExceeded(e) && !quotaToastShown) {
@@ -730,6 +824,249 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [doPull])
+
+  // ---- 候选人分表：索引行镜像水合（仪表盘/进展页统计的数据来源） ----
+  const hydrateMirror = useMemo(
+    () => async (): Promise<void> => {
+      const rows: Resume[] = []
+      let page = 1
+      let total = 0
+      for (;;) {
+        const res = await candidatesList({ page, size: 200, sort: 'updated_at_desc' })
+        total = res.total
+        rows.push(...res.items.map(partialResumeFromIndex))
+        if (rows.length >= total || rows.length >= MIRROR_CAP || res.items.length === 0) break
+        page++
+      }
+      // 已水合的完整记录（含 doc 字段）不被索引行覆盖；索引行之外的本回话完整记录保留
+      const fullById = new Map(
+        stateRef.current.resumes.filter((r) => !partialIdsRef.current.has(r.id)).map((r) => [r.id, r]),
+      )
+      const indexIds = new Set(rows.map((r) => r.id))
+      const merged = rows.map((r) => fullById.get(r.id) ?? r)
+      const extras = [...fullById.values()].filter((r) => !indexIds.has(r.id))
+      // 重建「部分记录」集合与回写基线：索引行标记为部分记录且已与服务端一致
+      partialIdsRef.current = new Set(rows.filter((r) => !fullById.has(r.id)).map((r) => r.id))
+      for (const r of rows) {
+        if (!fullById.has(r.id)) flushedRef.current.set(r.id, r.updatedAt)
+      }
+      baseDispatch({ type: 'hydrateResumes', resumes: [...merged, ...extras], replace: true })
+      mirrorReadyRef.current = true
+      setCandidatesTotal(total)
+      setCandidatesMirrorCapped(total > MIRROR_CAP)
+    },
+    [MIRROR_CAP],
+  )
+
+  // 启动时检测候选人 API 可用性：可用 → api 模式并拉索引行镜像；不可用 → 信封兼容模式
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const ok = await candidatesHealthCheck()
+      if (cancelled) return
+      if (ok) {
+        setCandidatesMode('api')
+        try {
+          await hydrateMirror()
+        } catch (e) {
+          console.warn('候选人索引镜像拉取失败：', e)
+        }
+      } else {
+        setCandidatesMode('legacy')
+      }
+    })()
+    // 连续失败 / 列表 404 → 降级信封兼容模式（candidates.ts 内触发）
+    onCandidatesDegraded(() => {
+      setCandidatesMode('legacy')
+      mirrorReadyRef.current = false
+      toast.warning('新存储不可用，已切换到兼容模式')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [hydrateMirror])
+
+  // api 模式下每 5 分钟刷新一次索引行镜像（页面隐藏时暂停）
+  useEffect(() => {
+    if (candidatesMode !== 'api') return
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') void hydrateMirror().catch(() => {})
+    }, 5 * 60 * 1000)
+    return () => clearInterval(timer)
+  }, [candidatesMode, hydrateMirror])
+
+  // api 模式：本地完整记录的变更（编辑/备注/阶段流转/导入等）批量回写候选人分表（50 条/批，800ms 合并）
+  useEffect(() => {
+    if (candidatesMode !== 'api' || !mirrorReadyRef.current) return
+    const changed = state.resumes.filter(
+      (r) =>
+        !partialIdsRef.current.has(r.id) &&
+        !flushInflightRef.current.has(r.id) &&
+        (flushedRef.current.get(r.id) ?? -1) < r.updatedAt,
+    )
+    if (changed.length === 0) return
+    const t = setTimeout(() => {
+      changed.forEach((r) => flushInflightRef.current.add(r.id))
+      void (async () => {
+        try {
+          await candidatesBulkUpsert(changed, 50)
+          for (const r of changed) {
+            flushedRef.current.set(r.id, r.updatedAt)
+            detailCacheRef.current.set(r.id, r)
+          }
+          stageCountsCacheRef.current = null
+        } catch (e) {
+          console.error('候选人回写失败：', e)
+          toast.error(e instanceof Error ? e.message : '候选人保存失败，将自动重试')
+        } finally {
+          changed.forEach((r) => flushInflightRef.current.delete(r.id))
+        }
+      })()
+    }, 800)
+    return () => clearTimeout(t)
+  }, [state.resumes, candidatesMode])
+
+  // ---- 候选人分表：对外 API ----
+
+  /** 本地（legacy 模式）过滤出与 API 同构的分页结果 */
+  const localQuery = useMemo(
+    () =>
+      (params: CandidateListParams): CandidateListResult => {
+        const kw = (params.q ?? '').trim().toLowerCase()
+        const filtered = stateRef.current.resumes.filter((r) => {
+          if (params.stage && r.stage !== params.stage) return false
+          if (params.owner === 'none' && r.lockedBy) return false
+          if (params.owner && params.owner !== 'none' && r.lockedBy !== params.owner) return false
+          if (params.certSubject && r.certSubject !== params.certSubject) return false
+          if (params.certLevel && r.certStage !== params.certLevel) return false
+          if (kw && ![r.name, r.university, r.major, ...r.skills, ...r.tags].join(' ').toLowerCase().includes(kw)) return false
+          return true
+        })
+        filtered.sort((a, b) =>
+          params.sort === 'updated_at_asc'
+            ? a.updatedAt - b.updatedAt
+            : params.sort === 'name'
+              ? a.name.localeCompare(b.name, 'zh')
+              : b.updatedAt - a.updatedAt,
+        )
+        const size = Math.min(200, Math.max(1, params.size ?? 50))
+        const page = Math.max(1, params.page ?? 1)
+        return {
+          total: filtered.length,
+          page,
+          size,
+          items: filtered.slice((page - 1) * size, page * size).map((r) => ({
+            id: r.id,
+            name: r.name,
+            certLevel: r.certStage || null,
+            certSubject: r.certSubject || null,
+            school: r.university || null,
+            gradYear: r.gradYear > 0 ? r.gradYear : null,
+            stage: r.stage,
+            owner: r.lockedBy,
+            status: 'active',
+            tags: r.tags,
+            createdAt: r.createdAt,
+            updatedAt: r.updatedAt,
+          })),
+        }
+      },
+    [],
+  )
+
+  const candidatesQuery = useMemo(
+    () => async (params: CandidateListParams): Promise<CandidateListResult> => {
+      if (candidatesModeRef.current === 'api') return candidatesList(params)
+      return localQuery(params)
+    },
+    [localQuery],
+  )
+
+  const candidateDetail = useMemo(
+    () => async (id: string): Promise<Resume> => {
+      if (candidatesModeRef.current !== 'api') {
+        const local = stateRef.current.resumes.find((r) => r.id === id)
+        if (!local) throw new Error('简历不存在或已被删除')
+        return local
+      }
+      const cached = detailCacheRef.current.get(id)
+      if (cached) return cached
+      // 本地已是完整记录（非索引行部分记录）时直接复用
+      const local = stateRef.current.resumes.find((r) => r.id === id)
+      if (local && !partialIdsRef.current.has(id)) {
+        detailCacheRef.current.set(id, local)
+        return local
+      }
+      const full = await candidatesGet(id)
+      detailCacheRef.current.set(id, full)
+      partialIdsRef.current.delete(id)
+      flushedRef.current.set(id, full.updatedAt)
+      baseDispatch({ type: 'upsertResumeLocal', resume: full })
+      return full
+    },
+    [],
+  )
+
+  const stageCounts = useMemo(
+    () => async (): Promise<Record<Stage, number>> => {
+      const cached = stageCountsCacheRef.current
+      if (cached && Date.now() - cached.at < 15_000) return cached.counts
+      let counts: Record<Stage, number>
+      if (candidatesModeRef.current === 'api') {
+        const entries = await Promise.all(
+          STAGE_ORDER.map(async (s) => [s, (await candidatesList({ stage: s, size: 1 })).total] as const),
+        )
+        counts = Object.fromEntries(entries) as Record<Stage, number>
+      } else {
+        counts = Object.fromEntries(
+          STAGE_ORDER.map((s) => [s, stateRef.current.resumes.filter((r) => r.stage === s).length]),
+        ) as Record<Stage, number>
+      }
+      stageCountsCacheRef.current = { at: Date.now(), counts }
+      return counts
+    },
+    [],
+  )
+
+  const updateCandidate = useMemo(
+    () => async (resume: Resume): Promise<void> => {
+      if (candidatesModeRef.current !== 'api') {
+        // legacy：写本地并标记信封待推送
+        dirtyRef.current = true
+        persistSyncMarks(true)
+        baseDispatch({ type: 'upsertResumeLocal', resume })
+        return
+      }
+      await candidatesUpsert(resume)
+      partialIdsRef.current.delete(resume.id)
+      flushedRef.current.set(resume.id, resume.updatedAt)
+      detailCacheRef.current.set(resume.id, resume)
+      stageCountsCacheRef.current = null
+      baseDispatch({ type: 'upsertResumeLocal', resume })
+    },
+    [],
+  )
+
+  const deleteCandidates = useMemo(
+    () => async (ids: string[]): Promise<void> => {
+      dispatch({ type: 'deleteResumes', ids })
+      if (candidatesModeRef.current !== 'api') return
+      let failed = 0
+      for (const id of ids) {
+        detailCacheRef.current.delete(id)
+        partialIdsRef.current.delete(id)
+        flushedRef.current.delete(id)
+        try {
+          await candidatesRemove(id)
+        } catch {
+          failed++
+        }
+      }
+      stageCountsCacheRef.current = null
+      if (failed > 0) toast.error(`${failed} 份简历云端删除失败，请稍后重试`)
+    },
+    [dispatch],
+  )
 
   const syncNow = useMemo(
     () => async (): Promise<boolean> => {
@@ -788,8 +1125,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       forcePush,
       syncUrl,
       setCustomSyncUrl,
+      candidatesMode,
+      candidatesQuery,
+      candidateDetail,
+      stageCounts,
+      updateCandidate,
+      deleteCandidates,
+      refreshCandidatesMirror: hydrateMirror,
+      candidatesTotal,
+      candidatesMirrorCapped,
     }
-  }, [state, dispatch, syncStatus, lastSyncAt, syncLocked, syncNow, submitSyncPassphrase, forcePush, syncUrl, setCustomSyncUrl])
+  }, [
+    state, dispatch, syncStatus, lastSyncAt, syncLocked, syncNow, submitSyncPassphrase, forcePush, syncUrl, setCustomSyncUrl,
+    candidatesMode, candidatesQuery, candidateDetail, stageCounts, updateCandidate, deleteCandidates, hydrateMirror,
+    candidatesTotal, candidatesMirrorCapped,
+  ])
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }

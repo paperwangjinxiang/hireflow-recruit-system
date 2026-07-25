@@ -11,3 +11,9 @@ id = "f838920b53d247f5987ce9993693a2b7"
 binding = "DB"
 database_name = "hireflow-store"
 database_id = "114980e8-1965-48c1-9521-c158c730f012"
+
+# R2 绑定（本地开发用；线上 Pages 项目的 R2 绑定通过 Cloudflare API 配置，wrangler.toml 对 Pages 不生效）
+# 注意：bucket 尚未开通时声明此绑定会导致 pages deploy 校验失败，开通 R2 并创建 bucket 后取消注释
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "hireflow-files"

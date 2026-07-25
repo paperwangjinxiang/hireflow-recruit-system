@@ -30,7 +30,7 @@ const REMINDER_ICONS = {
 } as const
 
 export default function Dashboard() {
-  const { resumes, users, interviews, jobs, currentUser } = useStore()
+  const { resumes, users, interviews, jobs, currentUser, candidatesMode, candidatesTotal, candidatesMirrorCapped } = useStore()
   const navigate = useNavigate()
 
   // ---- 筛选条 ----
@@ -184,6 +184,12 @@ export default function Dashboard() {
                 <RefreshCw className="mr-1 h-3.5 w-3.5" />重置
               </Button>
             </>
+          )}
+          {/* 候选人分表模式：统计基于索引行镜像；总量超镜像上限时明确提示截断口径 */}
+          {candidatesMode === 'api' && candidatesMirrorCapped && (
+            <Badge variant="secondary" className="bg-amber-50 text-amber-700">
+              数据量较大（共 {candidatesTotal ?? '—'} 条），统计基于前 {resumes.length} 条
+            </Badge>
           )}
         </CardContent>
       </Card>
