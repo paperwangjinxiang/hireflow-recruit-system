@@ -39,6 +39,16 @@ interface ManifestV2 {
   parts: string[]
 }
 
+/** v3 单 blob 存储：整个压缩载荷一个 blob。拉取仅需 指针+manifest+数据 共 3 次请求
+ * （v2 分片方案需 10+ 次，必踩公共存储 429 限流）；超出 SINGLE_BLOB_MAX 时回退 v2 分片 */
+interface ManifestV3 {
+  version: 3
+  updatedAt: number
+  origin: string
+  encoding: 'gzip-b64-single'
+  part: string
+}
+
 /** 加密信封：gzip 后的 payload 经 AES-GCM 加密（iv/data 为 hex） */
 interface SyncEnvelope {
   v: 2
@@ -78,8 +88,11 @@ const CLIENT_ID_KEY = 'hireflow-client-id'
 /** 团队同步口令仅存本机 localStorage，不随数据同步（口令本身绝不能上云） */
 const PASSPHRASE_KEY = 'hireflow-sync-passphrase'
 /** 单个分片的最大字符数。取值 24KB：远低于常见 JSON 存储的单 blob 上限（100KB~1MB），
- *  同时把一份加密库的拉取请求数从 9+ 降到 3~4 个，显著降低公共存储 429 限流命中率 */
+ *  仅作为 v3 单 blob 放不下时的兜底分片大小 */
 const CHUNK_SIZE = 24576
+/** v3 单 blob 载荷阈值：压缩后 base64 在此长度内用单 blob（约 200KB），
+ *  createChunk 失败（如服务端另有大小限制）时自动回退 v2 分片，双保险 */
+const SINGLE_BLOB_MAX = 200_000
 /** 同步密钥派生参数：固定盐 + 迭代次数（所有团队设备必须用相同参数才能派生出同一密钥） */
 const SYNC_KDF_SALT = 'hireflow-sync-envelope-v2'
 const SYNC_KDF_ITERATIONS = 100_000
@@ -336,11 +349,15 @@ export async function pullRemote(): Promise<PullResult> {
       return { status: 'error' }
     }
 
-    // v2 分片格式（仅默认端点）
-    const manifest = data as ManifestV2
-    if (manifest?.version === 2 && Array.isArray(manifest.parts)) {
+    // v2 分片 / v3 单 blob 格式（仅默认端点）；未信任数据用宽松结构类型
+    const manifest = data as { version?: number; updatedAt?: number; origin?: string; parts?: string[]; part?: string }
+    const partIds: string[] | null =
+      manifest?.version === 2 && Array.isArray(manifest.parts) ? manifest.parts
+        : manifest?.version === 3 && typeof manifest.part === 'string' ? [manifest.part]
+          : null
+    if (partIds) {
       const chunks: string[] = []
-      for (const id of manifest.parts) {
+      for (const id of partIds) {
         const chunk = await fetchChunk(id)
         if (chunk === null) return { status: 'error' } // 分片缺失视为本次拉取失败，下轮重试
         chunks.push(chunk)
@@ -353,11 +370,11 @@ export async function pullRemote(): Promise<PullResult> {
           const state = await decryptEnvelope(parsed)
           if (state === 'locked') return { status: 'locked', fingerprint: parsed.fp ?? null }
           if (state === null) return { status: 'error' }
-          return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt, origin: manifest.origin, state } }
+          return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt ?? 0, origin: manifest.origin ?? '', state } }
         }
         // 旧明文格式：直接作为 SharedState 兼容解析
         const state = parsed as SharedState
-        return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt, origin: manifest.origin, state } }
+        return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt ?? 0, origin: manifest.origin ?? '', state } }
       } catch {
         return { status: 'error' }
       }
@@ -406,6 +423,7 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
       try {
         const prev = await prevResp.json()
         if (prev?.version === 2 && Array.isArray(prev.parts)) oldParts = prev.parts
+        if (prev?.version === 3 && typeof prev.part === 'string') oldParts = [prev.part]
         if (typeof prev?.updatedAt === 'number') remoteTs = prev.updatedAt
         if (typeof prev?.origin === 'string') remoteOrigin = prev.origin
       } catch {
@@ -433,17 +451,27 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
     }
 
     const b64 = await compressToB64(payloadText)
-    const chunks: string[] = []
-    for (let i = 0; i < b64.length; i += CHUNK_SIZE) chunks.push(b64.slice(i, i + CHUNK_SIZE))
 
+    // v3 优先：整个载荷单 blob（请求数最少）；超阈值或服务端拒绝时回退 v2 分片
+    let manifest: ManifestV2 | ManifestV3 | null = null
     const partIds: string[] = []
-    for (const chunk of chunks) {
-      const id = await createChunk(chunk)
-      if (!id) return { status: 'error' } // 已创建的分片留作垃圾，下轮覆盖后清理
-      partIds.push(id)
+    if (b64.length <= SINGLE_BLOB_MAX) {
+      const singleId = await createChunk(b64)
+      if (singleId) {
+        manifest = { version: 3, updatedAt, origin, encoding: 'gzip-b64-single', part: singleId }
+        partIds.push(singleId)
+      }
     }
-
-    const manifest: ManifestV2 = { version: 2, updatedAt, origin, encoding: 'gzip-b64-chunks', parts: partIds }
+    if (!manifest) {
+      const chunks: string[] = []
+      for (let i = 0; i < b64.length; i += CHUNK_SIZE) chunks.push(b64.slice(i, i + CHUNK_SIZE))
+      for (const chunk of chunks) {
+        const id = await createChunk(chunk)
+        if (!id) return { status: 'error' } // 已创建的分片留作垃圾，下轮覆盖后清理
+        partIds.push(id)
+      }
+      manifest = { version: 2, updatedAt, origin, encoding: 'gzip-b64-chunks', parts: partIds }
+    }
     const resp = await fetchWithRetry(manifestUrl, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
