@@ -419,7 +419,13 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
     let remoteTs = 0
     let remoteOrigin = ''
     const prevResp = await fetchWithRetry(manifestUrl, { headers: { Accept: 'application/json' }, cache: 'no-store' }, 1)
-    if (prevResp?.ok) {
+    if (!prevResp || (!prevResp.ok && prevResp.status !== 404)) {
+      // 安全失败（fail-closed）：读不到远端状态（429 限流/5xx/网络故障）时绝不推送——
+      // 否则冲突检测失效，本机旧数据可能整库覆盖云端更新的数据（2026-07-25 事故教训）；
+      // 仅 404（manifest blob 过期被删、远端无数据）放行推送
+      return { status: 'error' }
+    }
+    if (prevResp.ok) {
       try {
         const prev = await prevResp.json()
         if (prev?.version === 2 && Array.isArray(prev.parts)) oldParts = prev.parts
@@ -430,6 +436,7 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
         // 忽略
       }
     }
+    // prevResp.status === 404：manifest blob 已过期被删，远端无数据，推送安全（无冲突可能）
 
     // 远端比别人新写入的数据：先放弃本次推送，由调用方拉取合并后再推
     if (remoteTs > knownRemoteTs && remoteOrigin && remoteOrigin !== origin) {
