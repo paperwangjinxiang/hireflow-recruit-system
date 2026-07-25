@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { CheckCircle2, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { encryptApplication, submitApplication } from '@/lib/applybox'
@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import MathCaptcha from '@/components/MathCaptcha'
 
 /** 防重复提交：同一浏览器 10 分钟内只允许投递一次 */
 const APPLY_LAST_KEY = 'hireflow-apply-last'
@@ -60,6 +61,10 @@ export default function Apply() {
   const [submitting, setSubmitting] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
+  // 图形验证码：答案由 MathCaptcha 出题后回调；resetSignal 递增即重新出题
+  const [captchaInput, setCaptchaInput] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
+  const captchaAnswerRef = useRef<number | null>(null)
 
   const set = (key: keyof ApplyForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [key]: e.target.value }))
@@ -103,6 +108,13 @@ export default function Apply() {
       setError('工作年限需在 0-50 之间')
       return
     }
+    // 图形验证码校验：答错不能提交并刷新题目
+    if (captchaAnswerRef.current === null || Number(captchaInput) !== captchaAnswerRef.current) {
+      setError('验证码回答错误，请重新作答')
+      setCaptchaInput('')
+      setCaptchaReset((n) => n + 1)
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -132,6 +144,9 @@ export default function Apply() {
       setError(err instanceof Error ? err.message : '提交失败，请稍后重试')
     } finally {
       setSubmitting(false)
+      // 提交后无论成败都重置验证码，防止同一答案被重复利用
+      setCaptchaInput('')
+      setCaptchaReset((n) => n + 1)
     }
   }
 
@@ -263,6 +278,15 @@ export default function Apply() {
                 rows={8} maxLength={20000} className="text-base"
                 value={form.rawText} onChange={set('rawText')}
                 placeholder="可直接粘贴简历文字内容（教育经历、工作经历、证书等），不超过 20000 字"
+              />
+            </Field>
+
+            <Field label="验证码" required>
+              <MathCaptcha
+                resetSignal={captchaReset}
+                onQuestion={(answer) => { captchaAnswerRef.current = answer }}
+                value={captchaInput}
+                onChange={setCaptchaInput}
               />
             </Field>
 

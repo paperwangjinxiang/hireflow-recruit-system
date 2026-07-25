@@ -2,14 +2,14 @@ import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
   Sparkles, FileText, FileUp, Settings, Trash2, CheckCircle2,
-  AlertTriangle, Loader2, BrainCircuit, ClipboardPaste,
+  AlertTriangle, Loader2, BrainCircuit, ClipboardPaste, ExternalLink, Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore, filterDuplicateResumes } from '@/lib/store'
 import { detectKind, extractText, MAX_FILE_SIZE } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
-import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
+import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, testLlmConnection, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
 import { maskIdCard } from '@/lib/regions'
 import { saveResumeFile } from '@/lib/filestore'
 import { matchDuplicates } from '@/lib/dedup'
@@ -61,6 +61,7 @@ export default function AiParse() {
   const [draftConfig, setDraftConfig] = useState<LlmConfig>(llmConfig)
   const [pasted, setPasted] = useState('')
   const [pasteOpen, setPasteOpen] = useState(false)
+  const [testing, setTesting] = useState(false)
 
   const doneItems = items.filter((i) => i.status === 'done')
   const importable = doneItems.filter((i) => i.fields.name.trim())
@@ -224,12 +225,30 @@ export default function AiParse() {
     if (!preset || preset.id === 'custom') return
     setDraftConfig({
       ...draftConfig,
+      enabled: true,
       baseUrl: preset.baseUrl,
       model: preset.model,
       visionModel: preset.visionModel,
       // 无视觉能力的服务商自动关闭视觉识别，扫描件走本地 OCR
       visionEnabled: preset.hasVision ? draftConfig.visionEnabled : false,
     })
+  }
+
+  /** 测试连接：最小开销请求验证 接口地址 + 模型 + API Key 是否可用 */
+  async function handleTestConnection() {
+    if (!draftConfig.baseUrl.trim() || !draftConfig.apiKey.trim() || !draftConfig.model.trim()) {
+      toast.error('请先填好接口地址、API Key 和模型（火山引擎填推理接入点 ID）')
+      return
+    }
+    setTesting(true)
+    try {
+      await testLlmConnection(draftConfig)
+      toast.success('连接成功！点击「保存设置」即可启用 AI 增强解析')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '连接失败，请检查配置')
+    } finally {
+      setTesting(false)
+    }
   }
 
   const activePreset = matchProviderPreset(draftConfig.baseUrl)
@@ -271,27 +290,67 @@ export default function AiParse() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>服务商</Label>
-                  <Select value={activePreset?.id ?? 'custom'} onValueChange={applyPreset}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择服务商，自动填端点与模型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LLM_PROVIDER_PRESETS.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label>一键选择引擎</Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {LLM_PROVIDER_PRESETS.map((p) => {
+                      const active = (activePreset?.id ?? 'custom') === p.id
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => applyPreset(p.id)}
+                          className={`rounded-lg border p-2.5 text-left transition-colors ${
+                            active
+                              ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500'
+                              : 'border-slate-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/40'
+                          }`}
+                        >
+                          <p className={`text-sm font-medium ${active ? 'text-indigo-700' : 'text-slate-700'}`}>{p.name}</p>
+                          {p.tagline && <p className="mt-0.5 text-[11px] leading-tight text-slate-400">{p.tagline}</p>}
+                        </button>
+                      )
+                    })}
+                  </div>
                   {activePreset?.note && (
                     <p className="text-xs leading-relaxed text-slate-400">{activePreset.note}</p>
                   )}
                 </div>
+
+                {/* 非技术用户三步引导（一键预设专属） */}
+                {activePreset && activePreset.id !== 'custom' && activePreset.signupUrl && (
+                  <div className="space-y-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">
+                    <p className="text-xs font-medium text-indigo-700">只需三步，完成配置：</p>
+                    <ol className="space-y-1.5 text-xs leading-relaxed text-slate-600">
+                      <li className="flex items-center gap-1.5">
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">1</span>
+                        <a
+                          href={activePreset.signupUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 font-medium text-indigo-600 underline underline-offset-2 hover:text-indigo-800"
+                        >
+                          {activePreset.signupLabel ?? '打开官网注册'}<ExternalLink className="h-3 w-3" />
+                        </a>
+                        <span>，免费创建 API Key</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">2</span>
+                        <span>把 API Key 粘贴到下方「API Key」一栏{activePreset.id === 'volcengine' ? '，并填入推理接入点 ID' : ''}</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">3</span>
+                        <span>点击「测试连接」，成功后保存设置</span>
+                      </li>
+                    </ol>
+                  </div>
+                )}
+
                 <div className="space-y-1.5">
                   <Label>接口地址（Base URL）</Label>
                   <Input
                     value={draftConfig.baseUrl}
                     onChange={(e) => setDraftConfig({ ...draftConfig, baseUrl: e.target.value })}
-                    placeholder="https://api.moonshot.cn/v1"
+                    placeholder="https://open.bigmodel.cn/api/paas/v4"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -300,16 +359,19 @@ export default function AiParse() {
                     type="password"
                     value={draftConfig.apiKey}
                     onChange={(e) => setDraftConfig({ ...draftConfig, apiKey: e.target.value })}
-                    placeholder="sk-..."
+                    placeholder="粘贴你的 API Key"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>模型</Label>
+                  <Label>{activePreset?.id === 'volcengine' ? '推理接入点 ID（作为模型名）' : '模型'}</Label>
                   <Input
                     value={draftConfig.model}
                     onChange={(e) => setDraftConfig({ ...draftConfig, model: e.target.value })}
-                    placeholder="moonshot-v1-8k"
+                    placeholder={activePreset?.modelPlaceholder ?? 'glm-4-flash'}
                   />
+                  {activePreset?.modelHint && (
+                    <p className="text-xs leading-relaxed text-slate-400">{activePreset.modelHint}</p>
+                  )}
                 </div>
                 <div className="flex items-center justify-between rounded-lg border p-3">
                   <div>
@@ -329,15 +391,21 @@ export default function AiParse() {
                 </div>
                 {draftConfig.visionEnabled && (
                   <div className="space-y-1.5">
-                    <Label>视觉模型</Label>
+                    <Label>视觉模型{activePreset?.id === 'volcengine' ? '（填视觉模型的推理接入点 ID）' : ''}</Label>
                     <Input
                       value={draftConfig.visionModel}
                       onChange={(e) => setDraftConfig({ ...draftConfig, visionModel: e.target.value })}
-                      placeholder="moonshot-v1-8k-vision-preview / gpt-4o"
+                      placeholder={activePreset?.id === 'volcengine' ? 'ep-xxxxxxxxxxxx' : 'glm-4v-flash / gpt-4o'}
                     />
                   </div>
                 )}
-                <Button className="w-full" onClick={saveSettings}>保存设置</Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" disabled={testing} onClick={handleTestConnection}>
+                    {testing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+                    测试连接
+                  </Button>
+                  <Button className="flex-1" onClick={saveSettings}>保存设置</Button>
+                </div>
                 <p className="text-xs leading-relaxed text-slate-400">
                   以上均为官方接口，非中转站；未配置时系统自动使用本地规则解析 + Tesseract OCR，无需任何费用
                 </p>

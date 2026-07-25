@@ -20,6 +20,8 @@ const DEFAULT_CONFIG: LlmConfig = { enabled: false, baseUrl: '', apiKey: '', mod
 export interface LlmProviderPreset {
   id: string
   name: string
+  /** 一键选择卡片上的副标题（免费额度等卖点） */
+  tagline?: string
   baseUrl: string
   model: string
   visionModel: string
@@ -27,54 +29,52 @@ export interface LlmProviderPreset {
   hasVision: boolean
   /** 展示在配置表单中的说明文案 */
   note?: string
+  /** 注册 / 控制台引导链接（一键预设的三步引导第①步） */
+  signupUrl?: string
+  /** 注册链接按钮文案 */
+  signupLabel?: string
+  /** 模型输入框占位提示（如火山的推理接入点 ep-xxx 需要用户自行填写） */
+  modelPlaceholder?: string
+  /** 模型输入框下方的补充说明（如接入点 ID 的获取方式） */
+  modelHint?: string
 }
 
+/**
+ * 一键选择引擎预设（均为 OpenAI 兼容接口，请求构造与 llm.ts 现有字段完全一致：
+ * POST {baseUrl}/chat/completions，Bearer 鉴权，body 为 model/messages/temperature/response_format）
+ */
 export const LLM_PROVIDER_PRESETS: LlmProviderPreset[] = [
   {
-    id: 'volcengine',
-    name: '火山方舟（豆包）· 推荐',
-    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-    model: 'doubao-1.5-pro-32k',
-    visionModel: 'doubao-1.5-vision-pro-32k',
-    hasVision: true,
-    note: '字节跳动官方平台，每模型 50 万 tokens 免费额度，console.volcengine.com 实名认证后创建 API Key',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    model: 'deepseek-chat',
-    visionModel: '',
-    hasVision: false,
-    note: 'DeepSeek 暂无视觉模型，扫描件将自动使用本地 Tesseract OCR（免费）',
-  },
-  {
-    id: 'qwen',
-    name: '通义千问',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
-    visionModel: 'qwen-vl-max',
-    hasVision: true,
-  },
-  {
-    id: 'moonshot',
-    name: 'Kimi（Moonshot）',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'moonshot-v1-8k',
-    visionModel: 'moonshot-v1-8k-vision-preview',
-    hasVision: true,
-  },
-  {
     id: 'zhipu',
-    name: '智谱',
+    name: '智谱 GLM',
+    tagline: '推荐 · glm-4-flash 完全免费',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     model: 'glm-4-flash',
-    visionModel: 'glm-4v',
+    visionModel: 'glm-4v-flash',
     hasVision: true,
+    signupUrl: 'https://open.bigmodel.cn/',
+    signupLabel: '打开智谱开放平台注册领 Key',
+    note: 'glm-4-flash 与 glm-4v-flash 均完全免费、不限量，注册实名后在「API Keys」页面创建密钥即可',
+  },
+  {
+    id: 'volcengine',
+    name: '火山引擎 · 豆包',
+    tagline: '每个模型 50 万 tokens 免费额度',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    // 火山方舟按「推理接入点」调用，模型一栏需填用户自己的接入点 ID（ep-xxx）
+    model: '',
+    visionModel: '',
+    hasVision: true,
+    signupUrl: 'https://www.volcengine.com/product/ark',
+    signupLabel: '打开火山方舟控制台',
+    modelPlaceholder: 'ep-xxxxxxxxxxxx',
+    modelHint: '模型栏请填推理接入点 ID：在火山方舟控制台「在线推理 → 创建推理接入点」选择豆包模型后获得 ep-xxx 开头的 ID',
+    note: '字节跳动官方平台，实名认证后每个模型赠送 50 万 tokens 免费额度',
   },
   {
     id: 'custom',
-    name: '自定义 OpenAI 兼容',
+    name: '自定义',
+    tagline: '任意 OpenAI 兼容接口',
     baseUrl: '',
     model: '',
     visionModel: '',
@@ -87,6 +87,35 @@ export function matchProviderPreset(baseUrl: string): LlmProviderPreset | undefi
   const normalized = baseUrl.replace(/\/+$/, '')
   if (!normalized) return undefined
   return LLM_PROVIDER_PRESETS.find((p) => p.id !== 'custom' && p.baseUrl === normalized)
+}
+
+/** 测试连接：用最小开销的请求验证「接口地址 + 模型 + API Key」是否可用（智谱 GLM / 火山方舟等 OpenAI 兼容接口均适用） */
+export async function testLlmConnection(config: Pick<LlmConfig, 'baseUrl' | 'apiKey' | 'model'>): Promise<void> {
+  const base = config.baseUrl.replace(/\/+$/, '')
+  const resp = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [{ role: 'user', content: '你好' }],
+      max_tokens: 1,
+    }),
+    signal: AbortSignal.timeout(20000),
+  })
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
+    // 常见错误友好化：401=key 错误，404=模型名/接入点 ID 错误
+    const hint =
+      resp.status === 401
+        ? 'API Key 无效或已过期，请检查是否复制完整'
+        : resp.status === 404
+          ? '模型名（或火山接入点 ID）不正确，请核对'
+          : body.replace(/\s+/g, ' ').slice(0, 100)
+    throw new Error(`接口返回 ${resp.status}：${hint}`)
+  }
 }
 
 export function getLlmConfig(): LlmConfig {

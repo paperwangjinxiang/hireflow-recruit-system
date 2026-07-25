@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import SyncIndicator from '@/components/SyncIndicator'
+import ReminderCenter from '@/components/ReminderCenter'
 
 const NAV = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, end: true },
@@ -198,10 +199,16 @@ export default function Layout() {
           </div>
         </div>
       </aside>
-      <main className="flex-1 overflow-auto">
-        <SyncLockedBanner />
-        <Outlet />
-      </main>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {/* 顶栏：提醒中心（铃铛 + 未读徽章） */}
+        <header className="flex h-12 shrink-0 items-center justify-end gap-1 border-b bg-white px-4">
+          <ReminderCenter />
+        </header>
+        <main className="flex-1 overflow-auto">
+          <SyncLockedBanner />
+          <Outlet />
+        </main>
+      </div>
     </div>
   )
 }

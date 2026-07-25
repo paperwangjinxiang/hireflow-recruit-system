@@ -48,6 +48,9 @@ interface DecryptedApply {
   error: string | null
 }
 
+/** 上次投递箱拉取状态（localStorage）：提醒中心据此提示「待入库投递」，无需打网络请求 */
+const APPLYBOX_LAST_KEY = 'hireflow-applybox-last'
+
 /** 手机号脱敏：中间 4 位替换为 **** */
 function maskPhone(phone: string): string {
   return phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')
@@ -165,6 +168,15 @@ export default function ImportPage() {
         }
       }
       setApplyItems(results)
+      // 记录上次拉取状态，供顶栏提醒中心展示「待入库投递」（不打网络请求，只读本地状态）
+      try {
+        localStorage.setItem(
+          APPLYBOX_LAST_KEY,
+          JSON.stringify({ at: Date.now(), pending: results.length }),
+        )
+      } catch {
+        // ignore
+      }
       if (results.length === 0) toast.success('投递箱暂无新投递')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '拉取投递失败，请稍后重试')

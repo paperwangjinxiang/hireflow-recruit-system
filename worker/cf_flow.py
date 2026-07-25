@@ -91,11 +91,16 @@ def main():
             print("[wb] code file present", flush=True)
             break
         if not clicked:
-            r = wb("evaluate", {"code": """(()=>{const b=[...document.querySelectorAll('button, a')].find(x=>/^authorize$/i.test((x.textContent||'').trim()));if(b){b.click();return 'CLICKED'}return 'WAIT|'+document.title.slice(0,25)})()"""})
+            r = wb("evaluate", {"code": """(()=>{const b=[...document.querySelectorAll('button, a')].find(x=>/^authorize$/i.test((x.textContent||'').trim()));if(!b)return 'WAIT|'+document.title.slice(0,25);b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();return 'POS|'+JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2})})()"""})
             v = str((r.get("data") or {}).get("value", r.get("err", "?")))
-            if attempt % 5 == 0 or "CLICKED" in v:
+            if attempt % 5 == 0:
                 print(f"[wb] {attempt}: {v[:50]}", flush=True)
-            if "CLICKED" in v:
+            if v.startswith("POS|"):
+                pos = json.loads(v[4:])
+                for t_ in ("mousePressed", "mouseReleased"):
+                    wb("cdp", {"method": "Input.dispatchMouseEvent",
+                               "params": {"type": t_, "x": pos["x"], "y": pos["y"], "button": "left", "clickCount": 1}})
+                print("[wb] CDP CLICKED", flush=True)
                 clicked = True
 
     stop.set()
