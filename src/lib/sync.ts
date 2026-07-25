@@ -72,17 +72,17 @@ export type PushResult =
   | { status: 'conflict' }
   | { status: 'error' }
 
-const API_BASE = 'https://jsonblob.com/api/jsonBlob'
+const API_BASE = 'https://hireflow-store-api.pages.dev/api/jsonBlob'
 
 /**
  * 云端共享库 manifest 指针（部署在 GitHub Pages，永不过期）。
- * JSONBlob 匿名 blob 约 24 小时过期，本机定时任务每 12 小时迁移数据到
- * 新 blob 并更新指针文件；客户端每次同步前先解析指针。
+ * 存储后端为 Cloudflare Pages Functions + KV（2026-07-25 自 JSONBlob 迁入：
+ * JSONBlob 匿名 blob 24h 过期且限流严格；KV 永久存储、限流宽松、国内可直连）。
  */
 const POINTER_URL = 'https://paperwangjinxiang.github.io/hireflow-recruit-system/sync-config.json'
 
 /** 兜底 manifest（指针不可达时使用） */
-export const DEFAULT_SYNC_URL = `${API_BASE}/019f92e6-15c3-7fee-85d8-2d836de4da66`
+export const DEFAULT_SYNC_URL = `${API_BASE}/da886392-6355-4769-a391-f291b43f9731`
 
 const SYNC_URL_KEY = 'hireflow-sync-url'
 const CLIENT_ID_KEY = 'hireflow-client-id'

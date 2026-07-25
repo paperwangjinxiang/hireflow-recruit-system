@@ -1,0 +1,9 @@
+name = "hireflow-store"
+main = "src/index.js"
+compatibility_date = "2026-07-25"
+workers_dev = true
+
+# KV namespace id 由 wrangler kv namespace create 生成后填入
+[[kv_namespaces]]
+binding = "BLOBS"
+id = "f838920b53d247f5987ce9993693a2b7"

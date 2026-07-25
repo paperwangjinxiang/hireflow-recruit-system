@@ -7,7 +7,7 @@
  */
 
 /** 投递箱 JSONBlob 地址（内容为 JSON 数组） */
-export const APPLY_BOX_URL = 'https://jsonblob.com/api/jsonBlob/019f979c-a34c-76f3-b8ee-b0cfa2852a47'
+export const APPLY_BOX_URL = 'https://hireflow-store-api.pages.dev/api/jsonBlob/453fabd3-3772-4dc5-b56f-ed3ca84e85ac'
 
 /** 投递公钥（SPKI base64，RSA-OAEP 2048 / SHA-256），私钥由管理员在「批量导入」页配置 */
 export const APPLY_PUBLIC_KEY_SPKI_B64 =
