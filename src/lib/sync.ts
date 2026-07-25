@@ -21,7 +21,8 @@ export interface SharedState {
   resumes: Resume[]
   interviews: Interview[]
   jobs: Job[]
-
+  /** 在线投递私钥（PKCS8 Base64）：随主库 AES 加密同步，仅管理员可配置；绝不明文回显 */
+  applyPrivateKey?: string
 }
 
 export interface RemotePayload {

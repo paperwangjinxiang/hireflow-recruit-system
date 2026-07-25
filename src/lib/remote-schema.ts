@@ -93,6 +93,8 @@ const sharedStateSchema = z.looseObject({
   interviews: z.array(interviewSchema),
   // 历史云端数据可能没有 jobs 数组（applyRemote 会兜底为 []）
   jobs: z.array(jobSchema).optional(),
+  // 在线投递私钥：可选字段，宽松放行不破坏既有数据
+  applyPrivateKey: z.string().optional(),
 })
 
 export type ValidateResult = { ok: true; state: SharedState } | { ok: false; issues: string[] }

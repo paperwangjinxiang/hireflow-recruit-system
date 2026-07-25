@@ -16,6 +16,8 @@ interface State {
   interviews: Interview[]
   jobs: Job[]
   currentUserId: string
+  /** 在线投递私钥（PKCS8 Base64）：存主库并随主库 AES 加密同步；管理员配置，绝不明文回显 */
+  applyPrivateKey?: string
 }
 
 type Action =
@@ -42,7 +44,8 @@ type Action =
   | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string; /** 管理员在确认弹窗中显式强制锁定（绕过学段 block 兜底校验） */ force?: boolean }
   | { type: 'updateResumeFields'; id: string; fields: Partial<Resume>; actorId: string }
   | { type: 'releaseResumes'; ids: string[]; reason: string; toStage: Stage; actorId: string }
-  | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[] }
+  | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[]; applyPrivateKey?: string }
+  | { type: 'setApplyPrivateKey'; privateKey: string }
   | { type: 'setRating'; id: string; rating: number }
   | { type: 'resetData' }
 
@@ -500,8 +503,12 @@ function reducer(state: State, action: Action): State {
         resumes: action.resumes.map(normalizeResume),
         interviews: action.interviews,
         jobs: action.jobs ?? [],
+        applyPrivateKey: action.applyPrivateKey,
         currentUserId,
       }
+    }
+    case 'setApplyPrivateKey': {
+      return { ...state, applyPrivateKey: action.privateKey }
     }
     case 'setRating': {
       return {
@@ -592,8 +599,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (pushingRef.current) return
       pushingRef.current = true
       setSyncStatus('syncing')
-      const { users, resumes, interviews, jobs } = stateRef.current
-      const shared: SharedState = { users, resumes, interviews, jobs }
+      const { users, resumes, interviews, jobs, applyPrivateKey } = stateRef.current
+      const shared: SharedState = { users, resumes, interviews, jobs, applyPrivateKey }
       const result = await pushRemote(shared, clientIdRef.current, lastRemoteRef.current)
       pushingRef.current = false
       if (result.status === 'pushed') {

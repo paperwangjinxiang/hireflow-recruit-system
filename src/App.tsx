@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from 'react'
-import { Routes, Route } from 'react-router'
+import { Routes, Route, useLocation } from 'react-router'
 import { toast } from 'sonner'
 import { StoreProvider, useStore } from '@/lib/store'
 import { clearSession, useSessionUserId } from '@/lib/auth'
@@ -12,6 +12,7 @@ import Jobs from '@/pages/Jobs'
 import ProgressPage from '@/pages/Progress'
 import ImportPage from '@/pages/ImportPage'
 import Team from '@/pages/Team'
+import Apply from '@/pages/Apply'
 import { Toaster } from '@/components/ui/sonner'
 
 const AiParse = lazy(() => import('@/pages/AiParse'))
@@ -22,6 +23,9 @@ function AuthGate() {
   const sessionId = useSessionUserId()
   const sessionUser = sessionId ? users.find((u) => u.id === sessionId) : undefined
   const kickedRef = useRef<string | null>(null)
+  const location = useLocation()
+  // 公开投递页：#/apply 免登录、不渲染侧边栏 Layout，全屏独立页
+  const isPublicApply = location.pathname.startsWith('/apply')
 
   // 会话用户被删除，或状态变为 disabled / pending → 强制退出到登录页
   useEffect(() => {
@@ -45,6 +49,15 @@ function AuthGate() {
       dispatch({ type: 'switchUser', userId: sessionUser.id })
     }
   }, [sessionUser, currentUserId, dispatch])
+
+  // 公开投递页优先于登录门禁：任何人扫码即可直达
+  if (isPublicApply) {
+    return (
+      <Routes>
+        <Route path="/apply" element={<Apply />} />
+      </Routes>
+    )
+  }
 
   if (!sessionUser || sessionUser.status !== 'active') {
     return <AuthPage />

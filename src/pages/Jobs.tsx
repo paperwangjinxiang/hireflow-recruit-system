@@ -2,12 +2,13 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   BriefcaseBusiness, Plus, MapPin, School, BedDouble, Users as UsersIcon,
-  Lock, Unlock, Trash2, Ban, RotateCcw, Search, AlertTriangle, ShieldAlert,
+  Lock, Unlock, Trash2, Ban, RotateCcw, Search, AlertTriangle, ShieldAlert, QrCode,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { SCHOOL_LEVELS, TEACHER_SUBJECTS, STAGE_LABELS, STAGE_COLORS, type Job, type Resume, type SchoolLevel } from '@/types'
 import { tagColor } from '@/lib/tags'
 import { computeMatchScore, scoreColor, scoreLabel, checkCertFit } from '@/lib/match'
+import { ApplyQrDialog } from '@/components/ApplyQrCode'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,6 +30,7 @@ export default function Jobs() {
   const [matchJobId, setMatchJobId] = useState<string | null>(null)
   const [closeJobId, setCloseJobId] = useState<string | null>(null)
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null)
+  const [qrJobId, setQrJobId] = useState<string | null>(null)
   const [keyword, setKeyword] = useState('')
 
   const jobCandidates = (jobId: string) => resumes.filter((r) => r.jobId === jobId)
@@ -103,6 +105,9 @@ export default function Jobs() {
                       <Lock className="mr-1.5 h-3.5 w-3.5" />匹配简历
                     </Button>
                   )}
+                  <Button size="sm" variant="outline" onClick={() => setQrJobId(job.id)}>
+                    <QrCode className="mr-1.5 h-3.5 w-3.5" />投递二维码
+                  </Button>
                   {job.status === 'open' ? (
                     <Button size="sm" variant="ghost" className="text-slate-500" onClick={() => setCloseJobId(job.id)}>
                       <Ban className="mr-1.5 h-3.5 w-3.5" />关闭
@@ -135,6 +140,17 @@ export default function Jobs() {
 
       <CreateJobDialog open={createOpen} onOpenChange={setCreateOpen} />
       {matchJob && <MatchResumeDialog job={matchJob} onClose={() => setMatchJobId(null)} />}
+      {qrJobId && (
+        <ApplyQrDialog
+          open
+          onOpenChange={(o) => !o && setQrJobId(null)}
+          jobId={qrJobId}
+          jobName={(() => {
+            const j = jobs.find((x) => x.id === qrJobId)
+            return j ? `${j.school} ${j.level}${j.subject}教师` : ''
+          })()}
+        />
+      )}
 
       <AlertDialog open={!!closeJobId} onOpenChange={(o) => !o && setCloseJobId(null)}>
         <AlertDialogContent>
