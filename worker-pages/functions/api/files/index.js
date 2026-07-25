@@ -1,7 +1,8 @@
 /**
- * Pages Function: POST /api/files — 简历附件上传（R2，零知识：内容是客户端加密后的密文字节）
+ * Pages Function: POST /api/files — 简历附件上传（零知识：内容是客户端加密后的密文字节）
  * body JSON {name, mime, data_b64}（base64 编码文件内容，解码后上限 4MB）
- * 生成 key resumes/{uuid}-{安全文件名}，PUT 进 R2 绑定 BUCKET → 201 {key, ok:true}
+ * 生成 key resumes/{uuid}-{安全文件名}。优先 R2（BUCKET），未开通时回退 KV（BLOBS，key 加 file: 前缀）。
+ * → 201 {key, ok:true, store:"r2"|"kv"}
  */
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -17,7 +18,7 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
-  if (!env.BUCKET) return jsonErr('r2 not configured', 501)
+  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const body = await request.text()
   if (body.length > MAX_BODY) return jsonErr('payload too large', 413)
   let data
@@ -31,8 +32,16 @@ export async function onRequestPost({ request, env }) {
   if (bytes.length > MAX_FILE) return jsonErr('file too large (max 4MB)', 413)
 
   const key = `resumes/${crypto.randomUUID()}-${safeName(name)}`
-  await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: mime } })
-  return new Response(JSON.stringify({ key, ok: true }), {
+  let store = 'r2'
+  if (env.BUCKET) {
+    await env.BUCKET.put(key, bytes, { httpMetadata: { contentType: mime } })
+  } else {
+    store = 'kv'
+    await env.BLOBS.put(`file:${key}`, bytes, {
+      metadata: { mime, name, size: bytes.length, created: Date.now() },
+    })
+  }
+  return new Response(JSON.stringify({ key, ok: true, store }), {
     status: 201, headers: { ...CORS, 'Content-Type': 'application/json' },
   })
 }

@@ -15,23 +15,33 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestGet({ env, params }) {
-  if (!env.BUCKET) return jsonErr('r2 not configured', 501)
+  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)
-  const obj = await env.BUCKET.get(key)
-  if (obj === null) return jsonErr('file not found', 404)
   const headers = { ...CORS }
-  headers['Content-Type'] = (obj.httpMetadata && obj.httpMetadata.contentType) || guessType(key)
+  let body = null
+  if (env.BUCKET) {
+    const obj = await env.BUCKET.get(key)
+    if (obj === null) return jsonErr('file not found', 404)
+    body = obj.body
+    headers['Content-Type'] = (obj.httpMetadata && obj.httpMetadata.contentType) || guessType(key)
+  } else {
+    const { value, metadata } = await env.BLOBS.getWithMetadata(`file:${key}`, 'arrayBuffer')
+    if (value === null) return jsonErr('file not found', 404)
+    body = value
+    headers['Content-Type'] = (metadata && metadata.mime) || guessType(key)
+  }
   headers['Content-Disposition'] = `inline; filename="${encodeURIComponent(key.split('/').pop())}"`
   headers['Cache-Control'] = 'private, max-age=3600'
-  return new Response(obj.body, { status: 200, headers })
+  return new Response(body, { status: 200, headers })
 }
 
 export async function onRequestDelete({ env, params }) {
-  if (!env.BUCKET) return jsonErr('r2 not configured', 501)
+  if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)
-  await env.BUCKET.delete(key)
+  if (env.BUCKET) await env.BUCKET.delete(key)
+  else await env.BLOBS.delete(`file:${key}`)
   return new Response(JSON.stringify({ deleted: true }), {
     status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
   })
@@ -39,7 +49,8 @@ export async function onRequestDelete({ env, params }) {
 
 function keyOf(params) {
   const parts = params.key
-  const key = Array.isArray(parts) ? parts.join('/') : String(parts || '')
+  let key = Array.isArray(parts) ? parts.join('/') : String(parts || '')
+  try { key = decodeURIComponent(key) } catch { /* 保持原样 */ }
   if (!key || key.includes('..')) return null
   return key
 }
