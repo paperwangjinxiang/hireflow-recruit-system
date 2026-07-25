@@ -2,8 +2,9 @@
 
 教师招聘系统的云存储与云 OCR 后端，部署为 Cloudflare Pages 项目 `hireflow-store-api`。
 
-- `functions/api/jsonBlob/` — JSONBlob 兼容的 KV 存储（团队共享数据）
-- `functions/api/ocr/` — 云 OCR 代理（百度通用文字识别-高精度版，可选）
+- `functions/api/jsonBlob/` — JSONBlob 兼容的存储（团队共享数据，**D1**）
+- `functions/api/inbox/` — 在线投递箱（D1 原子 INSERT；`POST` 投递、`GET` 拉取、`POST /consume` 删除已入库条目）
+- `functions/api/ocr/` — 云 OCR 代理（百度通用文字识别-高精度版，可选，token 仍缓存于 KV）
 
 ## 部署
 
@@ -12,7 +13,12 @@ cd worker-pages
 npx wrangler pages deploy public --project-name=hireflow-store-api
 ```
 
-KV 命名空间绑定见 `wrangler.toml`（`BLOBS`）。
+绑定：
+- KV 命名空间 `BLOBS`（仅供 OCR token 缓存使用），见 `wrangler.toml`
+- D1 数据库 `hireflow-store` 绑定名 `DB`（jsonBlob / inbox 的存储后端）——Pages 项目的 D1 绑定需在
+  Cloudflare Dashboard → Pages → hireflow-store-api → Settings → Bindings 配置
+  （或 API `PATCH /accounts/{account_id}/pages/projects/hireflow-store-api` 的
+  `deployment_configs.{production,preview}.d1_databases`），`wrangler.toml` 中的声明仅供本地开发
 
 ## 配置云 OCR（百度智能云）
 

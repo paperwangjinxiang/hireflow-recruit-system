@@ -1,5 +1,7 @@
 /**
  * Pages Function: POST /api/jsonBlob 创建 blob（JSONBlob 兼容）
+ * 存储后端：D1（SQLite），表 blobs(id TEXT PRIMARY KEY, content TEXT, updated_at INTEGER)
+ * 响应格式与原 KV 版完全一致。
  */
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -20,7 +22,9 @@ export async function onRequestPost({ request, env }) {
   }
   try { JSON.parse(body) } catch { return jsonErr('invalid json', 400) }
   const id = crypto.randomUUID()
-  await env.BLOBS.put(id, body)
+  await env.DB.prepare('INSERT INTO blobs (id, content, updated_at) VALUES (?, ?, ?)')
+    .bind(id, body, Date.now())
+    .run()
   return new Response(body, {
     status: 201,
     headers: { ...CORS, 'Content-Type': 'application/json', 'X-jsonblob-id': id, 'Location': `/api/jsonBlob/${id}` },

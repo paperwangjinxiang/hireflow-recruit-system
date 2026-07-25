@@ -6,8 +6,11 @@
  * 投递箱 blob 中存的全是密文，服务器/存储方无法读取内容。
  */
 
-/** 投递箱 JSONBlob 地址（内容为 JSON 数组） */
+/** 投递箱 JSONBlob 地址（内容为 JSON 数组）——旧后端，仅作过渡回退 */
 export const APPLY_BOX_URL = 'https://hireflow-store-api.pages.dev/api/jsonBlob/453fabd3-3772-4dc5-b56f-ed3ca84e85ac'
+
+/** 新投递箱 API（D1 原子 INSERT，零丢失）；旧后端返回 404 时自动回退 blob 方式 */
+export const INBOX_API_URL = 'https://hireflow-store-api.pages.dev/api/inbox'
 
 /** 投递公钥（SPKI base64，RSA-OAEP 2048 / SHA-256），私钥由管理员在「批量导入」页配置 */
 export const APPLY_PUBLIC_KEY_SPKI_B64 =
@@ -147,36 +150,90 @@ async function writeBox(items: ApplyBoxItem[]): Promise<void> {
   throw lastError ?? new Error('写入投递箱失败')
 }
 
+/** 内部标记：新 inbox API 不可用（旧后端 404），回退到旧 blob 方式 */
+class InboxApiUnavailable extends Error {}
+
 /**
- * 提交一条投递：读 → 上限检查 → push → 整体写回。
- * 已知并接受：读-改-写存在并发覆盖风险（两个候选人同一秒提交可能互相覆盖），
- * 公共存储无原子 append，低频投递场景下影响可忽略。
+ * 提交一条投递：优先 POST /api/inbox（D1 原子 INSERT，并发零丢失）；
+ * 若后端仍是旧版（404），回退到「读 → 上限检查 → push → 整体写回」的 blob 方式。
  */
 export async function submitApplication(
   envelope: ApplyEnvelope,
   meta: { jobId: string | null; jobName: string },
 ): Promise<void> {
-  const box = await readBox()
-  if (box.length >= APPLY_BOX_MAX_ITEMS) {
-    throw new Error('投递箱已满，请电话联系 HR')
-  }
-  box.push({
+  const item: ApplyBoxItem = {
     id: `ap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     submittedAt: Date.now(),
     jobId: meta.jobId,
     jobName: meta.jobName,
     payload: envelope,
-  })
+  }
+  try {
+    const res = await fetch(INBOX_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(item),
+    })
+    if (res.status === 404) throw new InboxApiUnavailable()
+    if (!res.ok) throw new Error(`提交投递失败（HTTP ${res.status}）`)
+    return
+  } catch (e) {
+    if (!(e instanceof InboxApiUnavailable)) throw e
+  }
+  // ---- 回退：旧 blob 读-改-写（过渡期使用，存在并发覆盖风险）----
+  const box = await readBox()
+  if (box.length >= APPLY_BOX_MAX_ITEMS) {
+    throw new Error('投递箱已满，请电话联系 HR')
+  }
+  box.push(item)
   await writeBox(box)
 }
 
-/** 拉取投递箱全部条目 */
+/** 拉取投递箱全部条目；优先新 inbox API，404 时回退旧 blob */
 export async function fetchApplications(): Promise<ApplyBoxItem[]> {
-  return readBox()
+  const res = await fetch(INBOX_API_URL, { headers: { Accept: 'application/json' } })
+  if (res.status === 404) return readBox()
+  if (!res.ok) throw new Error(`读取投递箱失败（HTTP ${res.status}）`)
+  const data = await res.json().catch(() => null)
+  const rows: unknown[] = Array.isArray(data?.items) ? data.items : []
+  // 新 API 行：{id:行id, created_at, ...投递字段}；行 id 转字符串作为条目 id（consume 按行 id 删除）
+  return rows
+    .map((r): ApplyBoxItem | null => {
+      const row = r as Record<string, unknown>
+      if (!row || typeof row.payload !== 'object' || row.payload === null) return null
+      return {
+        id: String(row.id),
+        submittedAt:
+          typeof row.submittedAt === 'number'
+            ? row.submittedAt
+            : typeof row.created_at === 'number'
+              ? row.created_at
+              : Date.now(),
+        jobId: (row.jobId as string | null) ?? null,
+        jobName: (row.jobName as string) ?? '',
+        payload: row.payload as ApplyEnvelope,
+      }
+    })
+    .filter((x): x is ApplyBoxItem => x !== null)
 }
 
-/** 按 id 删除投递箱条目（入库成功 / 垃圾删除后调用） */
+/** 按 id 删除投递箱条目（入库成功 / 垃圾删除后调用）；优先 consume API，404 时回退旧 blob */
 export async function removeApplications(ids: string[]): Promise<void> {
+  // 探测新 API 是否可用（GET 404 = 旧后端）
+  const probe = await fetch(INBOX_API_URL, { headers: { Accept: 'application/json' } })
+  if (probe.status !== 404) {
+    const rowIds = ids.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0)
+    if (rowIds.length > 0) {
+      const res = await fetch(`${INBOX_API_URL}/consume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ ids: rowIds }),
+      })
+      if (!res.ok) throw new Error(`从投递箱移除失败（HTTP ${res.status}）`)
+    }
+    return
+  }
+  // ---- 回退：旧 blob 读-改-写 ----
   const idSet = new Set(ids)
   const box = await readBox()
   const kept = box.filter((it) => !idSet.has(it.id))
