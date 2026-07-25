@@ -1,5 +1,5 @@
 {
-  "manifestUrl": "https://jsonblob.com/api/jsonBlob/019f9823-241f-7da5-b90a-5a6fa8b43400",
-  "refreshedAt": "2026-07-25T07:17:47Z",
-  "note": "HireFlow 云端共享库指针。JSONBlob 匿名 blob 24 小时过期，由本机定时任务每 12 小时迁移数据并更新本文件。"
+  "manifestUrl": "https://hireflow-store-api.pages.dev/api/jsonBlob/da886392-6355-4769-a391-f291b43f9731",
+  "refreshedAt": "2026-07-25T07:35:00Z",
+  "note": "HireFlow 云端共享库指针。存储后端为 Cloudflare Pages Functions + KV（永久存储、国内可直连），2026-07-25 自 JSONBlob 迁入，原 24 小时过期迁移机制已退役。"
 }
