@@ -21,12 +21,31 @@ export function checkCertFit(resume: Resume, job: Job): CertFitResult {
   const jobRank = LEVEL_RANK[job.level] ?? 0
   if (!resume.certStage) {
     if (resume.certQualified) {
-      return { level: 'warn', messages: ['仅有教师资格考试合格证明，入职前需完成认定'] }
+      // 已手动标注持合格证明：附备注信息，不视为「未填写教资」
+      return {
+        level: 'warn',
+        messages: [
+          `已标注持合格证明${resume.certNote ? `：${resume.certNote}` : '（教师资格考试合格证明，未取得证书）'}`,
+          '入职前需完成教师资格认定，建议补充教资学段/科目信息',
+        ],
+      }
     }
-    return { level: 'warn', messages: ['暂无教师资格证信息，请确认是否持有证书或合格证明'] }
+    return {
+      level: 'warn',
+      messages: [
+        '该候选人未填写教资信息，无法核验是否具备任教资格',
+        '建议先在详情页补充教资信息，或勾选「持合格证明」标注后再锁定',
+      ],
+    }
   }
   if (certRank < jobRank) {
-    return { level: 'block', messages: [`${resume.certStage}教师资格证不满足${job.level}学段要求`] }
+    return {
+      level: 'block',
+      messages: [
+        `该候选人教资学段为「${resume.certStage}」，岗位学段为「${job.level}」，存在错配风险`,
+        `${resume.certStage}教师资格证不满足${job.level}学段要求`,
+      ],
+    }
   }
   const messages: string[] = []
   if (resume.certSubject && job.subject && resume.certSubject !== job.subject) {

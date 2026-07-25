@@ -126,6 +126,7 @@ export function seedResumes(): Resume[] {
       certStage: t.certStage,
       certSubject: t.subject,
       certQualified: false,
+      certNote: '',
       gradYear: t.gradYear,
       hometown: t.hometown,
       fullTime: t.fullTime,

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
-import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, type Resume, type Stage } from '@/types'
+import { STAGE_LABELS, STAGE_ORDER, STAGE_COLORS, TERMINAL_STAGES, type Resume, type Stage } from '@/types'
 import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { MessageSquare, Lock, Star } from 'lucide-react'
@@ -9,9 +9,9 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { tagColor } from '@/lib/tags'
 import { cn } from '@/lib/utils'
 
-/** 进行中：主流水线阶段；历史档案：终态阶段 */
-const ACTIVE_STAGES: Stage[] = ['imported', 'screening', 'matched', 'interview', 'offered', 'onboarded']
-const HISTORY_STAGES: Stage[] = ['rejected', 'offboarded', 'blacklisted']
+/** 活跃流程：进行中阶段（导入/筛选/锁定/面试/录用）；历史归档：终态阶段（不通过/入职/离职/黑名单），口径与 TERMINAL_STAGES 一致 */
+const ACTIVE_STAGES: Stage[] = STAGE_ORDER.filter((s) => !TERMINAL_STAGES.includes(s))
+const HISTORY_STAGES: Stage[] = TERMINAL_STAGES
 
 type KanbanView = 'active' | 'history' | 'all'
 
@@ -31,7 +31,11 @@ export default function ResumesKanban({
   const visibleStages: Stage[] =
     view === 'active' ? ACTIVE_STAGES : view === 'history' ? HISTORY_STAGES : STAGE_ORDER
 
-  const byStage = (stage: Stage) => resumes.filter((r) => r.stage === stage)
+  const byStage = (stage: Stage) => {
+    const list = resumes.filter((r) => r.stage === stage)
+    // 历史归档视图：列内按最近变更时间倒序
+    return view === 'history' ? list.sort((a, b) => b.updatedAt - a.updatedAt) : list
+  }
 
   function handleDrop(stage: Stage) {
     setDragOverStage(null)
@@ -51,12 +55,12 @@ export default function ResumesKanban({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <ToggleGroup type="single" value={view} onValueChange={(v) => v && setView(v as KanbanView)} variant="outline">
-          <ToggleGroupItem value="active" className="px-4">进行中</ToggleGroupItem>
-          <ToggleGroupItem value="history" className="px-4">历史档案</ToggleGroupItem>
+          <ToggleGroupItem value="active" className="px-4">活跃流程</ToggleGroupItem>
+          <ToggleGroupItem value="history" className="px-4">历史归档</ToggleGroupItem>
           <ToggleGroupItem value="all" className="px-4">全部</ToggleGroupItem>
         </ToggleGroup>
         <span className="text-xs text-slate-400">
-          {view === 'active' ? '导入 → 筛选 → 匹配 → 面试 → 录用 → 入职' : view === 'history' ? '面试不通过 / 已离职 / 黑名单' : '全部九个阶段'}
+          {view === 'active' ? '导入 → 筛选 → 匹配 → 面试 → 录用' : view === 'history' ? '面试不通过 / 已入职 / 已离职 / 黑名单（按最近变更倒序）' : '全部九个阶段'}
         </span>
       </div>
       <div className="flex gap-3 overflow-x-auto pb-3">

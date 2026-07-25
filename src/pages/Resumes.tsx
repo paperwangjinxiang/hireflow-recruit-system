@@ -266,6 +266,8 @@ export default function Resumes() {
                   <TableCell>
                     {r.certStage ? (
                       <Badge variant="outline" className="bg-teal-50 text-teal-700 border-teal-200">{r.certStage}</Badge>
+                    ) : r.certQualified ? (
+                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200" title={r.certNote || '持教师资格考试合格证明'}>合格证明</Badge>
                     ) : (
                       <span className="text-xs text-slate-400">无证</span>
                     )}

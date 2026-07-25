@@ -77,6 +77,7 @@ interface EditForm {
   certStage: CertStage | 'none'
   certSubject: string
   certQualified: boolean
+  certNote: string
 }
 
 function toEditForm(r: Resume): EditForm {
@@ -96,6 +97,7 @@ function toEditForm(r: Resume): EditForm {
     certStage: r.certStage || 'none',
     certSubject: r.certSubject,
     certQualified: r.certQualified,
+    certNote: r.certNote,
   }
 }
 
@@ -121,6 +123,8 @@ export default function ResumeDetail({
   const [form, setForm] = useState<EditForm | null>(null)
   // 教资硬约束确认弹窗：warn/block 时挂起待锁定的职位
   const [certCheck, setCertCheck] = useState<{ jobId: string; level: 'warn' | 'block'; messages: string[] } | null>(null)
+  // 学段错配（block）的二次确认：先点「仍然锁定」进入确认态，再点「确认强制锁定」才真正执行
+  const [forceArmed, setForceArmed] = useState(false)
   // AI 润色后的画像（null = 使用规则摘要）
   const [aiSummary, setAiSummary] = useState<string | null>(null)
   const [polishing, setPolishing] = useState(false)
@@ -188,22 +192,25 @@ export default function ResumeDetail({
     if (fit.level === 'ok') {
       doMatchJob(jobId)
     } else {
+      setForceArmed(false)
       setCertCheck({ jobId, level: fit.level, messages: fit.messages })
     }
   }
 
   const doMatchJob = (jobId: string, force = false) => {
-    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符仅管理员可显式强制（双保险）
+    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符需显式「仍然锁定」二次确认（双保险）
     const job = jobs.find((j) => j.id === jobId)
     if (job && checkCertFit(resume, job).level === 'block' && !force) {
       toast.error('教资学段不满足岗位要求，无法锁定')
       setCertCheck(null)
+      setForceArmed(false)
       return
     }
     dispatch({ type: 'matchJob', resumeId: resume.id, jobId, actorId: currentUser.id, force })
     toast.success('已匹配并锁定该岗位')
     setMatchJobId('')
     setCertCheck(null)
+    setForceArmed(false)
   }
 
   const openEdit = () => {
@@ -234,6 +241,7 @@ export default function ResumeDetail({
         certStage,
         certSubject: certStage ? form.certSubject : '',
         certQualified: form.certQualified,
+        certNote: form.certQualified ? form.certNote.trim() : '',
       },
     })
     setEditOpen(false)
@@ -439,6 +447,14 @@ export default function ResumeDetail({
                   : resume.certQualified
                     ? '持教师资格考试合格证明（待认定）'
                     : '暂无教师资格证'}
+                {resume.certQualified && (
+                  <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700" title={resume.certNote || '持教师资格考试合格证明'}>
+                    合格证明
+                  </Badge>
+                )}
+                {resume.certQualified && resume.certNote && (
+                  <span className="truncate text-xs text-slate-400" title={resume.certNote}>{resume.certNote}</span>
+                )}
               </div>
               {resume.company && (
                 <div className="flex items-center gap-2 text-slate-600"><Building2 className="h-4 w-4 text-slate-400" />最近任职：{resume.company}</div>
@@ -964,16 +980,27 @@ export default function ResumeDetail({
       </SheetContent>
 
       {/* 教资硬约束确认弹窗 */}
-      <AlertDialog open={!!certCheck} onOpenChange={(o) => !o && setCertCheck(null)}>
+      <AlertDialog
+        open={!!certCheck}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCertCheck(null)
+            setForceArmed(false)
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className={`flex items-center gap-2 ${certCheck?.level === 'block' ? 'text-rose-600' : 'text-amber-600'}`}>
               {certCheck?.level === 'block' ? <ShieldAlert className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
-              {certCheck?.level === 'block' ? '教资学段不满足岗位要求' : '教资信息确认'}
+              {certCheck?.level === 'block' ? '教资学段与岗位学段错配' : '教资信息确认'}
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <ul className={`space-y-1.5 rounded-md border p-3 text-sm ${certCheck?.level === 'block' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
                 {certCheck?.messages.map((m, i) => <li key={i}>· {m}</li>)}
+                {certCheck?.level === 'block' && forceArmed && (
+                  <li className="font-medium">· 再次确认：强制锁定将记录在该候选人的活动日志中</li>
+                )}
               </ul>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -984,12 +1011,21 @@ export default function ResumeDetail({
                 确认锁定
               </AlertDialogAction>
             )}
-            {certCheck?.level === 'block' && currentUser.role === 'admin' && (
+            {certCheck?.level === 'block' && !forceArmed && (
+              <Button
+                variant="outline"
+                className="border-rose-300 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                onClick={() => setForceArmed(true)}
+              >
+                仍然锁定
+              </Button>
+            )}
+            {certCheck?.level === 'block' && forceArmed && (
               <AlertDialogAction
                 className="bg-rose-600 hover:bg-rose-700"
                 onClick={() => certCheck && doMatchJob(certCheck.jobId, true)}
               >
-                强制锁定（管理员）
+                确认强制锁定
               </AlertDialogAction>
             )}
           </AlertDialogFooter>
@@ -1095,6 +1131,17 @@ export default function ResumeDetail({
                 />
                 持有教师资格考试合格证明（未取得证书）
               </label>
+              {form.certQualified && (
+                <div className="space-y-1.5">
+                  <Label>合格证明备注</Label>
+                  <Input
+                    value={form.certNote}
+                    onChange={(e) => setForm({ ...form, certNote: e.target.value })}
+                    placeholder="如：2024 高中语文合格证明，证书待发"
+                  />
+                  <p className="text-xs text-slate-400">锁定时将按此备注提示核验，入职前需完成教师资格认定</p>
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>

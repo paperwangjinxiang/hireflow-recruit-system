@@ -98,6 +98,7 @@ export function normalizeResume(r: Resume): Resume {
     certStage,
     certSubject: r.certSubject ?? '',
     certQualified: r.certQualified ?? false,
+    certNote: r.certNote ?? '',
     gradYear: r.gradYear ?? 0,
     hometown: r.hometown ?? '',
     fullTime: (r.fullTime ?? '未知') as FullTime,

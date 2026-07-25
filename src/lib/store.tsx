@@ -41,7 +41,7 @@ type Action =
   | { type: 'addJob'; job: Omit<Job, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateJob'; id: string; patch: Partial<Pick<Job, 'region' | 'school' | 'level' | 'subject' | 'dormitory' | 'headcount' | 'status' | 'note'>>; actorId: string }
   | { type: 'deleteJob'; id: string }
-  | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string; /** 管理员在确认弹窗中显式强制锁定（绕过学段 block 兜底校验） */ force?: boolean }
+  | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string; /** 确认弹窗中显式「仍然锁定」（绕过学段 block 兜底校验，活动记录留痕） */ force?: boolean }
   | { type: 'updateResumeFields'; id: string; fields: Partial<Resume>; actorId: string }
   | { type: 'releaseResumes'; ids: string[]; reason: string; toStage: Stage; actorId: string }
   | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[]; applyPrivateKey?: string }
@@ -54,7 +54,7 @@ export type SyncStatus = 'idle' | 'syncing' | 'ok' | 'error'
 export type ImportableResume = Omit<
   Resume,
   'id' | 'createdAt' | 'updatedAt' | 'notes' | 'activities' | 'university' | 'company' | 'certificates' | 'tags' | 'rating'
-  | 'age' | 'certStage' | 'certSubject' | 'certQualified' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
+  | 'age' | 'certStage' | 'certSubject' | 'certQualified' | 'certNote' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
   | 'idCard' | 'rawText'
 > & {
   /** 可选预生成 ID（导入方需要提前知道简历 ID 时使用，如关联本机原件存储） */
@@ -69,6 +69,7 @@ export type ImportableResume = Omit<
   certStage?: Resume['certStage']
   certSubject?: string
   certQualified?: boolean
+  certNote?: string
   gradYear?: number
   hometown?: string
   fullTime?: Resume['fullTime']
@@ -185,6 +186,7 @@ function reducer(state: State, action: Action): State {
           certStage: '',
           certSubject: '',
           certQualified: false,
+          certNote: '',
           gradYear: 0,
           hometown: '',
           fullTime: '未知',
@@ -363,12 +365,10 @@ function reducer(state: State, action: Action): State {
       if (!target) return state
       // 兜底校验①：简历已被其他职位锁定时拒绝（同一职位重复锁定幂等放行）
       if (target.jobId && target.jobId !== action.jobId) return state
-      // 兜底校验②：学段硬性不符（如小学教师资格证锁高中岗位）一律拒绝，
+      // 兜底校验②：学段硬性不符（如小学教师资格证锁高中岗位）默认拒绝，
       // 与详情页共用的 checkCertFit 判定保持一致；
-      // 唯一例外：管理员在确认弹窗中显式选择「强制锁定」（force=true，活动记录留痕）。
-      // force 仅对管理员生效：非管理员调用方携带 force=true 时忽略，按普通锁定走校验
-      const isAdmin = state.users.find((u) => u.id === action.actorId)?.role === 'admin'
-      const force = !!action.force && isAdmin
+      // 唯一例外：调用方在确认弹窗中显式选择「仍然锁定」并完成二次确认（force=true，活动记录留痕）
+      const force = !!action.force
       if (checkCertFit(target, job).level === 'block' && !force) return state
       const forced = force && checkCertFit(target, job).level === 'block'
       return {
@@ -384,7 +384,7 @@ function reducer(state: State, action: Action): State {
                 updatedAt: now,
                 activities: [
                   ...r.activities,
-                  activity(action.actorId, `${forced ? '（管理员强制）' : ''}匹配并锁定到「${jobLabel(job)}」`),
+                  activity(action.actorId, `${forced ? '（强制锁定）' : ''}匹配并锁定到「${jobLabel(job)}」`),
                 ],
               }
             : r,

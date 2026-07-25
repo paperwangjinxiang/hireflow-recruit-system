@@ -53,6 +53,8 @@ const resumeSchema = z.looseObject({
   // 阶段不枚举具体值：历史/未来版本可能出现新阶段，宽松放行避免砖化
   stage: z.string(),
   assigneeId: z.string().nullable().optional(),
+  // 合格证明备注：新增可选字段，宽松放行不破坏既有数据
+  certNote: z.string().optional(),
   certificates: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
   rating: z.number().optional(),

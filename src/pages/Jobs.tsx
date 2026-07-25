@@ -329,6 +329,8 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
   const [onlySameLevel, setOnlySameLevel] = useState(true)
   // 教资硬约束确认弹窗：warn/block 时挂起待锁定的简历（与详情页 ResumeDetail 分级口径一致）
   const [certCheck, setCertCheck] = useState<{ resumeId: string; level: 'warn' | 'block'; messages: string[] } | null>(null)
+  // 学段错配（block）的二次确认：先点「仍然锁定」进入确认态，再点「确认强制锁定」才真正执行
+  const [forceArmed, setForceArmed] = useState(false)
 
   const candidates = useMemo(() => {
     const keyword = kw.trim()
@@ -347,6 +349,7 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
     if (fit.level === 'ok') {
       doLock(r.id)
     } else {
+      setForceArmed(false)
       setCertCheck({ resumeId: r.id, level: fit.level, messages: fit.messages })
     }
   }
@@ -354,16 +357,18 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
   const doLock = (resumeId: string, force = false) => {
     const r = resumes.find((x) => x.id === resumeId)
     if (!r) return
-    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符仅管理员可显式强制（双保险）
+    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符需显式「仍然锁定」二次确认（双保险）
     const fit = checkCertFit(r, job)
     if (fit.level === 'block' && !force) {
       toast.error(fit.messages[0] ?? '教资学段不满足岗位要求，无法锁定')
       setCertCheck(null)
+      setForceArmed(false)
       return
     }
     dispatch({ type: 'matchJob', resumeId, jobId: job.id, actorId: currentUser.id, force })
     toast.success(`已将 ${r.name} 锁定到「${job.school}」`)
     setCertCheck(null)
+    setForceArmed(false)
   }
 
   const certCheckResume = certCheck ? resumes.find((r) => r.id === certCheck.resumeId) : null
@@ -422,18 +427,29 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
         </ul>
       </DialogContent>
 
-      {/* 教资硬约束确认弹窗（与详情页分级口径一致：warn 确认即可，block 仅管理员可强制） */}
-      <AlertDialog open={!!certCheck} onOpenChange={(o) => !o && setCertCheck(null)}>
+      {/* 教资硬约束确认弹窗（与详情页分级口径一致：warn 确认即可，block 需「仍然锁定」二次确认） */}
+      <AlertDialog
+        open={!!certCheck}
+        onOpenChange={(o) => {
+          if (!o) {
+            setCertCheck(null)
+            setForceArmed(false)
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle className={`flex items-center gap-2 ${certCheck?.level === 'block' ? 'text-rose-600' : 'text-amber-600'}`}>
               {certCheck?.level === 'block' ? <ShieldAlert className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
-              {certCheck?.level === 'block' ? '教资学段不满足岗位要求' : '教资信息确认'}
+              {certCheck?.level === 'block' ? '教资学段与岗位学段错配' : '教资信息确认'}
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <ul className={`space-y-1.5 rounded-md border p-3 text-sm ${certCheck?.level === 'block' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
                 {certCheckResume && <li className="font-medium">候选人：{certCheckResume.name}</li>}
                 {certCheck?.messages.map((m, i) => <li key={i}>· {m}</li>)}
+                {certCheck?.level === 'block' && forceArmed && (
+                  <li className="font-medium">· 再次确认：强制锁定将记录在该候选人的活动日志中</li>
+                )}
               </ul>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -444,12 +460,21 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
                 确认锁定
               </AlertDialogAction>
             )}
-            {certCheck?.level === 'block' && currentUser.role === 'admin' && (
+            {certCheck?.level === 'block' && !forceArmed && (
+              <Button
+                variant="outline"
+                className="border-rose-300 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                onClick={() => setForceArmed(true)}
+              >
+                仍然锁定
+              </Button>
+            )}
+            {certCheck?.level === 'block' && forceArmed && (
               <AlertDialogAction
                 className="bg-rose-600 hover:bg-rose-700"
                 onClick={() => certCheck && doLock(certCheck.resumeId, true)}
               >
-                强制锁定（管理员）
+                确认强制锁定
               </AlertDialogAction>
             )}
           </AlertDialogFooter>
