@@ -28,7 +28,7 @@ export interface Evaluation {
 const LEVEL_RANK: Record<string, number> = { 幼儿园: 1, 小学: 2, 初中: 3, 高中: 4 }
 
 /** 学科 → 对口专业关键词（专业命中任一即视为对口） */
-const SUBJECT_MAJORS: Record<string, string[]> = {
+export const SUBJECT_MAJORS: Record<string, string[]> = {
   语文: ['汉语言', '中文', '语文教育', '汉语国际教育', '中国语言文学', '对外汉语'],
   数学: ['数学', '应用数学', '数理', '统计学'],
   英语: ['英语', '商务英语', '翻译'],

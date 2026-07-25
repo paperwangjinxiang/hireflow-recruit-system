@@ -26,7 +26,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   Mail, Phone, Briefcase, GraduationCap, Clock, Tag, Star, Building2, School,
   Award, MapPin, CalendarDays, BookOpen, Lock, Unlock, BedDouble, IdCard,
-  Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList, Pencil, ShieldAlert,
+  Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList, ClipboardCheck, Pencil, ShieldAlert,
   CheckCircle, Sparkles, Loader2, Copy, Upload, Download, Users, Paperclip,
 } from 'lucide-react'
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
@@ -34,6 +34,7 @@ import { tagColor } from '@/lib/tags'
 import { scoreColor, scoreLabel, checkCertFit } from '@/lib/match'
 import { evaluateResume, GRADE_COLORS, GRADE_LABELS, type EvalAlert } from '@/lib/evaluate'
 import { generateCandidateSummary, isSummaryAiReady, polishSummaryWithLlm } from '@/lib/summary'
+import { evaluateCompetency, type CompetencyAlert } from '@/lib/competency'
 import { parseExperiences } from '@/lib/timeline'
 import { fileStoreSupported, getResumeFile, saveResumeFile, type StoredResumeFile } from '@/lib/filestore'
 import { findDuplicates } from '@/lib/dedup'
@@ -41,7 +42,7 @@ import { regionFromIdCard, genderFromIdCard, birthFromIdCard, maskIdCard, isVali
 import InterviewSection from './InterviewSection'
 import { toast } from 'sonner'
 
-const ALERT_STYLES: Record<EvalAlert['level'], { icon: typeof Info; cls: string }> = {
+const ALERT_STYLES: Record<EvalAlert['level'] | CompetencyAlert['level'], { icon: typeof Info; cls: string }> = {
   danger: { icon: OctagonAlert, cls: 'border-rose-200 bg-rose-50 text-rose-700' },
   warning: { icon: AlertTriangle, cls: 'border-amber-300 bg-amber-50 text-amber-800' },
   info: { icon: Info, cls: 'border-sky-200 bg-sky-50 text-sky-700' },
@@ -250,6 +251,8 @@ export default function ResumeDetail({
 
   // 综合评估：锁定岗位后按岗位评估
   const evaluation = evaluateResume(resume, lockedJob ?? null)
+  // 胜任力评估：六维度 0-5 打分加权汇总；锁定岗位时按该岗位口径计算匹配维度
+  const competency = evaluateCompetency(resume, lockedJob ?? null)
 
   // 候选人画像（规则摘要；AI 润色成功时展示润色文本）
   const summary = generateCandidateSummary(resume, lockedJob ?? null)
@@ -570,6 +573,62 @@ export default function ResumeDetail({
                 {evaluation.alerts.length > 0 && (
                   <div className="mt-4 space-y-1.5 border-t pt-3">
                     {evaluation.alerts.map((a, i) => {
+                      const style = ALERT_STYLES[a.level]
+                      const Icon = style.icon
+                      return (
+                        <div
+                          key={i}
+                          className={`flex items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs ${style.cls} ${a.level === 'warning' ? 'font-medium' : ''}`}
+                        >
+                          <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          {a.text}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 胜任力评估（六维度 0-5 打分加权汇总，锁定岗位后按岗位口径计算） */}
+            <div className="space-y-3">
+              <h3 className="flex items-center gap-1.5 font-semibold"><ClipboardCheck className="h-4 w-4 text-indigo-600" />胜任力评估</h3>
+              <div className="rounded-lg border p-4">
+                <div className="flex items-center gap-4">
+                  <div className="text-4xl font-bold tabular-nums text-slate-800">{competency.total}</div>
+                  <div className="space-y-1">
+                    <Badge variant="outline" className={`${GRADE_COLORS[competency.grade]} text-sm`}>
+                      {competency.grade} 级 · {GRADE_LABELS[competency.grade]}
+                    </Badge>
+                    <div className="text-xs text-slate-400">
+                      {lockedJob ? `按锁定岗位「${lockedJob.school}·${lockedJob.level}${lockedJob.subject}」计算匹配度` : '未锁定岗位，按通用教师标准评估'}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {competency.dimensions.map((d) => (
+                    <div key={d.key} className="grid grid-cols-[7rem_1fr_3rem] items-start gap-3">
+                      <span className="pt-0.5 text-xs text-slate-500">
+                        {d.label}<span className="ml-0.5 text-slate-300">{d.weight}%</span>
+                      </span>
+                      <div className="min-w-0">
+                        <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              d.score >= 4 ? 'bg-emerald-500' : d.score >= 3 ? 'bg-sky-500' : d.score >= 2 ? 'bg-amber-500' : 'bg-rose-500'
+                            }`}
+                            style={{ width: `${(d.score / 5) * 100}%` }}
+                          />
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-400">{d.reason}</div>
+                      </div>
+                      <span className="pt-0.5 text-right text-xs font-medium tabular-nums text-slate-600">{d.score}/5</span>
+                    </div>
+                  ))}
+                </div>
+                {competency.alerts.length > 0 && (
+                  <div className="mt-4 space-y-1.5 border-t pt-3">
+                    {competency.alerts.map((a, i) => {
                       const style = ALERT_STYLES[a.level]
                       const Icon = style.icon
                       return (
