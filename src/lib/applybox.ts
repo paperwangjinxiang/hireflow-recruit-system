@@ -5,6 +5,10 @@
  * HR 端用私钥（存主库、随主库 AES 加密同步）解密后入库。
  * 投递箱 blob 中存的全是密文，服务器/存储方无法读取内容。
  */
+import { authHeaders } from '@/lib/sync'
+
+/** 401 提示文案（令牌与 KV 不匹配 = 口令错误） */
+const AUTH_MISMATCH_MSG = '团队口令与服务端不匹配，请检查同步设置'
 
 /** 投递箱 JSONBlob 地址（内容为 JSON 数组）——旧后端，仅作过渡回退 */
 export const APPLY_BOX_URL = 'https://hireflow-store-api.pages.dev/api/jsonBlob/453fabd3-3772-4dc5-b56f-ed3ca84e85ac'
@@ -118,8 +122,9 @@ export async function decryptApplication(envelope: ApplyEnvelope, privateKeyPkcs
 
 /** 读取投递箱数组（blob 不存在 / 非数组时按 [] 处理） */
 async function readBox(): Promise<ApplyBoxItem[]> {
-  const res = await fetch(APPLY_BOX_URL, { headers: { Accept: 'application/json' } })
+  const res = await fetch(APPLY_BOX_URL, { headers: await authHeaders({ Accept: 'application/json' }) })
   if (res.status === 404) return []
+  if (res.status === 401) throw new Error(AUTH_MISMATCH_MSG)
   if (!res.ok) throw new Error(`读取投递箱失败（HTTP ${res.status}）`)
   const data = await res.json().catch(() => null)
   return Array.isArray(data) ? (data as ApplyBoxItem[]) : []
@@ -133,13 +138,14 @@ async function writeBox(items: ApplyBoxItem[]): Promise<void> {
     try {
       const res = await fetch(APPLY_BOX_URL, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         body: JSON.stringify(items),
       })
       if (res.status === 429) {
         lastError = new Error('投递箱服务繁忙（限流），请稍后重试')
         continue
       }
+      if (res.status === 401) throw new Error(AUTH_MISMATCH_MSG)
       if (!res.ok) throw new Error(`写入投递箱失败（HTTP ${res.status}）`)
       return
     } catch (e) {
@@ -191,8 +197,9 @@ export async function submitApplication(
 
 /** 拉取投递箱全部条目；优先新 inbox API，404 时回退旧 blob */
 export async function fetchApplications(): Promise<ApplyBoxItem[]> {
-  const res = await fetch(INBOX_API_URL, { headers: { Accept: 'application/json' } })
+  const res = await fetch(INBOX_API_URL, { headers: await authHeaders({ Accept: 'application/json' }) })
   if (res.status === 404) return readBox()
+  if (res.status === 401) throw new Error(AUTH_MISMATCH_MSG)
   if (!res.ok) throw new Error(`读取投递箱失败（HTTP ${res.status}）`)
   const data = await res.json().catch(() => null)
   const rows: unknown[] = Array.isArray(data?.items) ? data.items : []
@@ -220,15 +227,17 @@ export async function fetchApplications(): Promise<ApplyBoxItem[]> {
 /** 按 id 删除投递箱条目（入库成功 / 垃圾删除后调用）；优先 consume API，404 时回退旧 blob */
 export async function removeApplications(ids: string[]): Promise<void> {
   // 探测新 API 是否可用（GET 404 = 旧后端）
-  const probe = await fetch(INBOX_API_URL, { headers: { Accept: 'application/json' } })
+  const probe = await fetch(INBOX_API_URL, { headers: await authHeaders({ Accept: 'application/json' }) })
+  if (probe.status === 401) throw new Error(AUTH_MISMATCH_MSG)
   if (probe.status !== 404) {
     const rowIds = ids.map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0)
     if (rowIds.length > 0) {
       const res = await fetch(`${INBOX_API_URL}/consume`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         body: JSON.stringify({ ids: rowIds }),
       })
+      if (res.status === 401) throw new Error(AUTH_MISMATCH_MSG)
       if (!res.ok) throw new Error(`从投递箱移除失败（HTTP ${res.status}）`)
     }
     return

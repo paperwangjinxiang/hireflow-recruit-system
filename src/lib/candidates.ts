@@ -1,6 +1,6 @@
 import type { Resume, Stage } from '@/types'
 import { normalizeResume } from '@/lib/tags'
-import { encryptJsonEnvelope, decryptJsonEnvelope, getSyncPassphrase, type SyncEnvelope } from '@/lib/sync'
+import { encryptJsonEnvelope, decryptJsonEnvelope, getSyncPassphrase, authHeaders, type SyncEnvelope } from '@/lib/sync'
 
 /**
  * 候选人分表 API 数据层（GET/POST/PUT/DELETE /api/candidates）。
@@ -118,7 +118,7 @@ async function request(path: string, init: RequestInit, actionLabel: string): Pr
   try {
     resp = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: { Accept: 'application/json', ...(init.headers ?? {}) },
+      headers: await authHeaders({ Accept: 'application/json', ...(init.headers as Record<string, string> ?? {}) }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch (e) {
@@ -127,6 +127,11 @@ async function request(path: string, init: RequestInit, actionLabel: string): Pr
       throw new Error(`${actionLabel}超时（30 秒），请检查网络后重试`)
     }
     throw new Error(`${actionLabel}失败：网络连接异常，请稍后重试`)
+  }
+  if (resp.status === 401) {
+    // 令牌与 KV 不匹配：多半是口令错误；走既有降级，由上层提示检查同步设置
+    recordFailure(true)
+    throw new Error('团队口令与服务端不匹配，请检查同步设置')
   }
   if (!resp.ok) {
     // 列表路由不存在（旧后端未升级）→ 立即降级
@@ -344,7 +349,7 @@ export async function remove(id: string): Promise<void> {
 export async function healthCheck(): Promise<boolean> {
   try {
     const resp = await fetch(`${API_BASE}?page=1&size=1`, {
-      headers: { Accept: 'application/json' },
+      headers: await authHeaders({ Accept: 'application/json' }),
       signal: AbortSignal.timeout(15_000),
     })
     return resp.ok

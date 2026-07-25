@@ -26,6 +26,8 @@ import ResumeDetail from './ResumeDetail'
 import ResumesKanban from './ResumesKanban'
 import CompareDialog from '@/components/CompareDialog'
 import { deleteResumeFile } from '@/lib/filestore'
+import { deleteAttachment } from '@/lib/attachments'
+import type { AttachmentMeta } from '@/types'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 // ---- 表格列定制与排序 ----
@@ -247,6 +249,8 @@ function ResumesApi() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** 删除简历时是否一并删除云端留存的原始附件（默认勾选） */
+  const [delAttach, setDelAttach] = useState(true)
   const [compareOpen, setCompareOpen] = useState(false)
   const [view, setView] = useState<'table' | 'kanban'>('table')
   const [batchBusy, setBatchBusy] = useState(false)
@@ -711,16 +715,28 @@ function ResumesApi() {
             <AlertDialogTitle>确认删除 {selectedIds.length} 份简历？</AlertDialogTitle>
             <AlertDialogDescription>删除后不可恢复，相关的备注与动态也会一并删除。</AlertDialogDescription>
           </AlertDialogHeader>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <Checkbox checked={delAttach} onCheckedChange={(c) => setDelAttach(!!c)} />
+            同时删除云端留存的原始附件（删除后不可恢复）
+          </label>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               className="bg-rose-600 hover:bg-rose-700"
               onClick={() => {
                 void (async () => {
+                  // 勾选「一并删除云端原件」时先水合完整记录拿到附件清单（列表索引行不含 doc）
+                  let cloudMetas: AttachmentMeta[] = []
+                  if (delAttach) {
+                    const fulls = await Promise.all(selectedIds.map((id) => candidateDetail(id).catch(() => null)))
+                    cloudMetas = fulls.filter((r): r is Resume => !!r).flatMap((r) => r.attachments ?? [])
+                  }
                   await deleteCandidates(selectedIds)
                   // 同步清理本机 IndexedDB 中的简历原件（失败静默忽略）
                   selectedIds.forEach((id) => void deleteResumeFile(id))
-                  toast.success(`已删除 ${selectedIds.length} 份简历`)
+                  // 删除云端留存的原始附件（单个失败仅警告，不阻断）
+                  for (const m of cloudMetas) await deleteAttachment(m)
+                  toast.success(`已删除 ${selectedIds.length} 份简历${cloudMetas.length > 0 ? '（含云端原件）' : ''}`)
                   setSelected(new Set())
                   refresh()
                 })()
@@ -750,6 +766,8 @@ function ResumesLegacy() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** 删除简历时是否一并删除云端留存的原始附件（默认勾选） */
+  const [delAttach, setDelAttach] = useState(true)
   const [compareOpen, setCompareOpen] = useState(false)
   const [view, setView] = useState<'table' | 'kanban'>('table')
 
@@ -1042,15 +1060,27 @@ function ResumesLegacy() {
             <AlertDialogTitle>确认删除 {selectedIds.length} 份简历？</AlertDialogTitle>
             <AlertDialogDescription>删除后不可恢复，相关的备注与动态也会一并删除。</AlertDialogDescription>
           </AlertDialogHeader>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <Checkbox checked={delAttach} onCheckedChange={(c) => setDelAttach(!!c)} />
+            同时删除云端留存的原始附件（删除后不可恢复）
+          </label>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
               className="bg-rose-600 hover:bg-rose-700"
               onClick={() => {
+                // 勾选「一并删除云端原件」时先收集附件清单（删除后本地记录即不存在）
+                const cloudMetas: AttachmentMeta[] = delAttach
+                  ? selectedIds.flatMap((id) => resumes.find((r) => r.id === id)?.attachments ?? [])
+                  : []
                 dispatch({ type: 'deleteResumes', ids: selectedIds })
                 // 同步清理本机 IndexedDB 中的简历原件（失败静默忽略）
                 selectedIds.forEach((id) => void deleteResumeFile(id))
-                toast.success(`已删除 ${selectedIds.length} 份简历`)
+                // 删除云端留存的原始附件（单个失败仅警告，不阻断）
+                void (async () => {
+                  for (const m of cloudMetas) await deleteAttachment(m)
+                })()
+                toast.success(`已删除 ${selectedIds.length} 份简历${cloudMetas.length > 0 ? '（含云端原件）' : ''}`)
                 setSelected(new Set())
               }}
             >

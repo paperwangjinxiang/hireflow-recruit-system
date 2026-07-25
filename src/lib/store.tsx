@@ -896,6 +896,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [candidatesMode, hydrateMirror])
 
   // api 模式：本地完整记录的变更（编辑/备注/阶段流转/导入等）批量回写候选人分表（50 条/批，800ms 合并）
+  // flushTick：一批冲刷完成后 +1 触发复检——冲刷进行中产生的新变更（如导入后附件回写，
+  // 因 flushInflight 跳过）否则会滞留在本地，直到下一次无关状态变更才被回写
+  const [flushTick, setFlushTick] = useState(0)
   useEffect(() => {
     if (candidatesMode !== 'api' || !mirrorReadyRef.current) return
     const changed = state.resumes.filter(
@@ -920,11 +923,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           toast.error(e instanceof Error ? e.message : '候选人保存失败，将自动重试')
         } finally {
           changed.forEach((r) => flushInflightRef.current.delete(r.id))
+          // 冲刷期间被跳过的新变更触发下一轮检查（幂等：无新变更时 changed 为空直接返回）
+          setFlushTick((t) => t + 1)
         }
       })()
     }, 800)
     return () => clearTimeout(t)
-  }, [state.resumes, candidatesMode])
+  }, [state.resumes, candidatesMode, flushTick])
 
   // ---- 候选人分表：对外 API ----
 

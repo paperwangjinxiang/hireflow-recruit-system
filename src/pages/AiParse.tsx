@@ -12,6 +12,7 @@ import { tagColor } from '@/lib/tags'
 import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, testLlmConnection, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
 import { maskIdCard } from '@/lib/regions'
 import { saveResumeFile } from '@/lib/filestore'
+import { uploadAttachment } from '@/lib/attachments'
 import { matchDuplicates } from '@/lib/dedup'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -217,6 +218,31 @@ export default function AiParse() {
     toast.success(`成功导入 ${unique.length} 份简历${skipped > 0 ? `，跳过 ${skipped} 份重复` : ''}`)
     if (fileSaveFail > 0) {
       toast.warning(`${fileSaveFail} 份原件未能保存到本机存储（解析数据已正常入库，可在详情页重新上传原件）`)
+    }
+    // 云端原件留存：解析入库完成后顺序上传（避免并发雪崩）；加密失败/超限时降级为「原件未留存」，不阻断导入
+    const withFile = unique.filter((c) => fileByResumeId.has(c.id))
+    if (withFile.length > 0) {
+      const tid = toast.loading(`正在加密留存云端原件 0/${withFile.length}…`)
+      let attachOk = 0
+      let attachFail = 0
+      for (let i = 0; i < withFile.length; i++) {
+        const c = withFile[i]
+        const f = fileByResumeId.get(c.id)!
+        toast.loading(`正在加密留存云端原件 ${i + 1}/${withFile.length}：${f.name}`, { id: tid })
+        const meta = await uploadAttachment(f, f.name)
+        if (meta) {
+          attachOk++
+          dispatch({ type: 'updateResumeFields', id: c.id, actorId: currentUser.id, fields: { attachments: [meta] } })
+        } else {
+          attachFail++
+        }
+      }
+      toast.dismiss(tid)
+      if (attachFail > 0) {
+        toast.warning(`${attachFail} 份原件未留存到云端（候选人已正常入库，详情页附件区显示「原件未留存」）`)
+      } else if (attachOk > 0) {
+        toast.success(`${attachOk} 份原始附件已加密留存到云端`)
+      }
     }
     navigate('/resumes')
   }

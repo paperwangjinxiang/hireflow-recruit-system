@@ -1,6 +1,7 @@
 import * as pdfjs from 'pdfjs-dist'
 import mammoth from 'mammoth'
 import { getLlmConfig, isVisionReady, ocrWithVision } from '@/lib/llm'
+import { authHeaders } from '@/lib/sync'
 
 // Worker 作为同源静态文件随应用一起部署（public/pdf.worker.min.mjs，随 pdfjs-dist 4.x 升级）。
 // Chrome 禁止从 data:/blob: URL 创建 ES module Worker，因此必须走同源文件。
@@ -338,11 +339,12 @@ async function ocrWithCloud(
     try {
       const resp = await fetch(OCR_API_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         body: JSON.stringify({ image: dataUrl.split(',')[1] ?? '' }),
         signal: AbortSignal.timeout(CLOUD_OCR_TIMEOUT_MS),
       })
       if (resp.status === 501) return null // 未配置云 OCR：整批回退本地
+      if (resp.status === 401) throw new Error('团队口令与服务端不匹配，请检查同步设置')
       if (!resp.ok) throw new Error(`云端 OCR 返回 ${resp.status}`)
       const data = await resp.json()
       if (typeof data?.text !== 'string') throw new Error('云端 OCR 响应格式异常')

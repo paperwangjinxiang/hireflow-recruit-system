@@ -27,7 +27,7 @@ import {
   Mail, Phone, Briefcase, GraduationCap, Clock, Tag, Star, Building2, School,
   Award, MapPin, CalendarDays, BookOpen, Lock, Unlock, BedDouble, IdCard,
   Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList, ClipboardCheck, Pencil, ShieldAlert,
-  CheckCircle, Sparkles, Loader2, Copy, Upload, Download, Users, Paperclip,
+  CheckCircle, Sparkles, Loader2, Copy, Upload, Download, Users, Paperclip, Eye, Trash2, CloudUpload,
 } from 'lucide-react'
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 import { tagColor } from '@/lib/tags'
@@ -37,6 +37,8 @@ import { generateCandidateSummary, isSummaryAiReady, polishSummaryWithLlm } from
 import { evaluateCompetency, type CompetencyAlert } from '@/lib/competency'
 import { parseExperiences } from '@/lib/timeline'
 import { fileStoreSupported, getResumeFile, saveResumeFile, type StoredResumeFile } from '@/lib/filestore'
+import { fetchAttachment, deleteAttachment, isPreviewable, formatSize } from '@/lib/attachments'
+import type { AttachmentMeta } from '@/types'
 import { findDuplicates } from '@/lib/dedup'
 import { regionFromIdCard, genderFromIdCard, birthFromIdCard, maskIdCard, isValidIdCard } from '@/lib/regions'
 import InterviewSection from './InterviewSection'
@@ -133,6 +135,10 @@ export default function ResumeDetail({
   const [rawFile, setRawFile] = useState<StoredResumeFile | null>(null)
   const [fileChecked, setFileChecked] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 云端原始附件（加密留存）：预览弹窗 / 进行中的附件 key / 待删除目标
+  const [attPreview, setAttPreview] = useState<{ meta: AttachmentMeta; url: string } | null>(null)
+  const [attBusyKey, setAttBusyKey] = useState<string | null>(null)
+  const [attDeleteTarget, setAttDeleteTarget] = useState<AttachmentMeta | null>(null)
 
   const resumeId = resume?.id ?? ''
 
@@ -171,6 +177,13 @@ export default function ResumeDetail({
       if (fileUrl) URL.revokeObjectURL(fileUrl)
     }
   }, [fileUrl])
+
+  // 附件预览 blob URL：切换预览目标或卸载时释放
+  useEffect(() => {
+    return () => {
+      if (attPreview) URL.revokeObjectURL(attPreview.url)
+    }
+  }, [attPreview])
 
   // 经历时间线解析（空原文返回空数组）
   const experiences = useMemo(() => parseExperiences(resume?.rawText ?? ''), [resume?.rawText])
@@ -305,6 +318,57 @@ export default function ResumeDetail({
     } else {
       toast.error('保存失败：当前浏览器不支持本地文件存储（可能处于隐私模式）')
     }
+  }
+
+  // 云端原始附件
+  const attachments = resume.attachments ?? []
+
+  /** 预览云端附件：解密 → blob URL → 弹窗内嵌展示 */
+  const openAttachmentPreview = async (meta: AttachmentMeta) => {
+    if (attBusyKey) return
+    setAttBusyKey(meta.key)
+    try {
+      const blob = await fetchAttachment(meta)
+      setAttPreview({ meta, url: URL.createObjectURL(blob) })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '原件加载失败')
+    } finally {
+      setAttBusyKey(null)
+    }
+  }
+
+  /** 下载云端附件：解密 → 触发浏览器下载（文件名用 meta.name） */
+  const downloadCloudAttachment = async (meta: AttachmentMeta) => {
+    if (attBusyKey) return
+    setAttBusyKey(meta.key)
+    try {
+      const blob = await fetchAttachment(meta)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = meta.name
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '原件下载失败')
+    } finally {
+      setAttBusyKey(null)
+    }
+  }
+
+  /** 删除云端附件（二次确认后调用）：远端删除 + 从候选人 attachments 移除并保存 */
+  const removeCloudAttachment = async () => {
+    const meta = attDeleteTarget
+    if (!meta) return
+    setAttDeleteTarget(null)
+    const ok = await deleteAttachment(meta)
+    dispatch({
+      type: 'updateResumeFields',
+      id: resume.id,
+      actorId: currentUser.id,
+      fields: { attachments: attachments.filter((a) => a.key !== meta.key) },
+    })
+    if (ok) toast.success(`云端原件「${meta.name}」已删除`)
   }
 
   const rawFileName = rawFile?.name ?? ''
@@ -890,6 +954,65 @@ export default function ResumeDetail({
               </>
             )}
 
+            {/* 原始附件（云端加密留存，零知识；无附件时整块隐藏） */}
+            {attachments.length > 0 && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  <h3 className="flex items-center gap-1.5 font-semibold">
+                    <CloudUpload className="h-4 w-4 text-indigo-600" />原始附件
+                    <span className="text-xs font-normal text-slate-400">（云端加密留存）</span>
+                  </h3>
+                  <ul className="divide-y rounded-lg border">
+                    {attachments.map((meta) => (
+                      <li key={meta.key} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-slate-400" />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-slate-700" title={meta.name}>{meta.name}</p>
+                            <p className="text-xs text-slate-400">
+                              {formatSize(meta.size)} · {meta.uploadedAt > 0 ? format(meta.uploadedAt, 'yyyy-MM-dd HH:mm') : '—'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {isPreviewable(meta) && (
+                            <Button
+                              size="sm" variant="ghost" className="h-7 px-2 text-xs"
+                              disabled={attBusyKey === meta.key}
+                              onClick={() => void openAttachmentPreview(meta)}
+                            >
+                              {attBusyKey === meta.key
+                                ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                : <Eye className="mr-1 h-3 w-3" />}
+                              预览
+                            </Button>
+                          )}
+                          <Button
+                            size="sm" variant="ghost" className="h-7 px-2 text-xs"
+                            disabled={attBusyKey === meta.key}
+                            onClick={() => void downloadCloudAttachment(meta)}
+                          >
+                            {attBusyKey === meta.key && !isPreviewable(meta)
+                              ? <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              : <Download className="mr-1 h-3 w-3" />}
+                            下载
+                          </Button>
+                          <Button
+                            size="sm" variant="ghost" className="h-7 px-2 text-xs text-rose-500 hover:text-rose-600"
+                            onClick={() => setAttDeleteTarget(meta)}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xs text-slate-400">原件已在客户端加密后上传，云端仅存密文；删除候选人时可选择一并删除</p>
+                </div>
+              </>
+            )}
+
             <Separator />
 
             <div className="grid grid-cols-2 gap-3">
@@ -1209,6 +1332,50 @@ export default function ResumeDetail({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 云端原始附件预览弹窗（解密后的 blob URL 内嵌展示，关闭即释放） */}
+      <Dialog open={!!attPreview} onOpenChange={(o) => !o && setAttPreview(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Paperclip className="h-4 w-4 text-slate-400" />{attPreview?.meta.name}
+            </DialogTitle>
+          </DialogHeader>
+          {attPreview && (
+            (attPreview.meta.mime.includes('pdf') || /\.pdf$/i.test(attPreview.meta.name)) ? (
+              <iframe src={attPreview.url} className="h-[70vh] w-full rounded-lg border bg-white" title={`原始附件 · ${attPreview.meta.name}`} />
+            ) : (
+              <img src={attPreview.url} alt={attPreview.meta.name} className="max-h-[70vh] w-auto rounded-lg border" />
+            )
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAttPreview(null)}>关闭</Button>
+            {attPreview && (
+              <Button onClick={() => void downloadCloudAttachment(attPreview.meta)}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />下载原件
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 云端原件删除二次确认 */}
+      <AlertDialog open={!!attDeleteTarget} onOpenChange={(o) => !o && setAttDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除云端原件？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将从云端附件存储删除「{attDeleteTarget?.name}」，删除后不可恢复；候选人的解析数据不受影响。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction className="bg-rose-600 hover:bg-rose-700" onClick={() => void removeCloudAttachment()}>
+              确认删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   )
 }

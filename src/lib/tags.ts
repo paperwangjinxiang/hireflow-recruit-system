@@ -110,6 +110,7 @@ export function normalizeResume(r: Resume): Resume {
     lockedAt: r.lockedAt ?? null,
     notes: r.notes ?? [],
     activities: r.activities ?? [],
+    attachments: r.attachments ?? [],
     stage: normalizeStage(r.stage as string),
   }
 }

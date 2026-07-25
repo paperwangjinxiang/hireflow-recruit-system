@@ -109,7 +109,11 @@ export async function resolveManifestUrl(forceRefresh = false): Promise<string> 
     return pointerCache.url
   }
   try {
-    const resp = await fetch(POINTER_URL, { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+    const resp = await fetch(POINTER_URL, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+      headers: await authHeaders({ Accept: 'application/json' }),
+    })
     if (resp.ok) {
       const data = await resp.json()
       if (typeof data?.manifestUrl === 'string' && data.manifestUrl.includes(API_BASE)) {
@@ -165,14 +169,50 @@ export function setSyncPassphrase(passphrase: string) {
   }
 }
 
+// ---- API 访问令牌（X-HF-Token，服务端与 KV config:api-token 比对） ----
+
+const API_TOKEN_SUFFIX = ':hireflow-api-token-v1'
+let cachedApiToken: string | null = null
+let cachedApiTokenFor: string | null = null
+
+/**
+ * 由团队口令派生 API 令牌：SHA-256(口令 + ':hireflow-api-token-v1') 的 hex。
+ * 口令未配置时返回 null（请求不带令牌，由服务端决定是否放行）。
+ */
+export async function getApiToken(): Promise<string | null> {
+  const passphrase = getSyncPassphrase()
+  if (!passphrase) return null
+  if (cachedApiToken && cachedApiTokenFor === passphrase) return cachedApiToken
+  try {
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(passphrase + API_TOKEN_SUFFIX),
+    )
+    const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+    cachedApiToken = hex
+    cachedApiTokenFor = passphrase
+    return hex
+  } catch {
+    return null
+  }
+}
+
+/** 构造带 X-HF-Token 的请求头；token 不可用时返回原 headers 的副本 */
+export async function authHeaders(headers: Record<string, string> = {}): Promise<Record<string, string>> {
+  const token = await getApiToken()
+  return token ? { ...headers, 'X-HF-Token': token } : { ...headers }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 带指数退避重试的 fetch：429 限流 / 5xx 服务端错误 / 网络错误按 1s / 3s / 9s 退避，最多重试 3 次 */
 async function fetchWithRetry(input: string, init: RequestInit, retries = 3): Promise<Response | null> {
   const backoff = [1000, 3000, 9000]
+  // 统一附带 X-HF-Token（口令未配置时不带，由服务端决定是否放行）
+  const headers = await authHeaders((init.headers as Record<string, string> | undefined) ?? {})
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const resp = await fetch(input, { ...init, signal: AbortSignal.timeout(15000) })
+      const resp = await fetch(input, { ...init, headers, signal: AbortSignal.timeout(15000) })
       if ((resp.status === 429 || resp.status >= 500) && attempt < retries) {
         await sleep(backoff[Math.min(attempt, backoff.length - 1)])
         continue
@@ -301,6 +341,16 @@ async function decryptEnvelope(envelope: SyncEnvelope): Promise<SharedState | 'l
 export function isEnvelope(data: unknown): data is SyncEnvelope {
   const d = data as SyncEnvelope | null
   return !!d && d.v === 2 && d.enc === true && typeof d.data === 'string'
+}
+
+/**
+ * 由本机团队同步口令派生「云端原始附件」加密密钥。
+ * 与信封同一套参数：PBKDF2(口令, 'hireflow-sync-envelope-v2', 100000) → AES-GCM 256，
+ * 服务端只存密文字节（零知识）。口令未设置时返回 null（附件留存跳过，不阻断主流程）。
+ */
+export async function deriveAttachmentKey(): Promise<CryptoKey | null> {
+  const derived = await deriveSyncKey(getSyncPassphrase())
+  return derived?.key ?? null
 }
 
 // ---- 通用 JSON 信封加解密（候选人分表 doc 复用同一套 envelope v2 方案） ----

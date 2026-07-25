@@ -64,6 +64,22 @@ export interface Activity {
 export type CertStage = '幼儿园' | '小学' | '初中' | '高中' | ''
 export type FullTime = '全日制' | '非全日制' | '未知'
 
+/** 云端原始附件元数据：文件字节经客户端 AES-GCM 加密后上传（零知识），服务端只存密文 */
+export interface AttachmentMeta {
+  /** 云端附件存储的对象 key */
+  key: string
+  /** 原始文件名 */
+  name: string
+  /** MIME 类型 */
+  mime: string
+  /** 明文大小（字节） */
+  size: number
+  /** 本次加密的随机 IV（base64，12 字节） */
+  iv: string
+  /** 上传时间戳 */
+  uploadedAt: number
+}
+
 export interface Resume {
   id: string
   name: string
@@ -101,6 +117,8 @@ export interface Resume {
   updatedAt: number
   notes: Note[]
   activities: Activity[]
+  /** 云端原始附件（加密上传，零知识留存）；导入失败/未留存时为空数组 */
+  attachments?: AttachmentMeta[]
 }
 
 export type SchoolLevel = '高中' | '初中' | '小学'
