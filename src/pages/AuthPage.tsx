@@ -89,6 +89,9 @@ export default function AuthPage() {
       const phone = regPhone.trim()
       // 边界：系统内一个用户都没有时，首个注册用户自动成为 active 的管理员
       const isFirstUser = users.length === 0
+      // 【临时测试策略 2026-07-25】注册即激活，无需管理员审批；
+      // 测试结束后改回 status: isFirstUser ? 'active' : 'pending' 恢复审批流
+      const OPEN_REGISTRATION = true
       dispatch({
         type: 'register',
         user: {
@@ -99,13 +102,13 @@ export default function AuthPage() {
           color: USER_COLORS[users.length % USER_COLORS.length],
           passwordHash,
           salt,
-          status: isFirstUser ? 'active' : 'pending',
+          status: isFirstUser || OPEN_REGISTRATION ? 'active' : 'pending',
         },
       })
       if (isFirstUser) {
         toast.success('首个账号已创建为管理员，请登录')
       } else {
-        toast.success('注册成功，待管理员审批后登录')
+        toast.success('注册成功，可直接登录')
       }
       setRegName('')
       setRegPhone('')
@@ -179,7 +182,7 @@ export default function AuthPage() {
 
               <TabsContent value="register" className="mt-0 space-y-4">
                 <CardDescription className="text-xs">
-                  注册后需管理员审批通过方可登录；审批时可调整角色。
+                  测试期开放注册：注册成功即可直接登录（管理员仍可在团队成员页调整角色或禁用）。
                 </CardDescription>
                 <div className="space-y-1.5">
                   <Label htmlFor="reg-name">姓名</Label>
