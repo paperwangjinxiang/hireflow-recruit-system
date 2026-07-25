@@ -5,3 +5,9 @@ dist
 .vite
 test-fixtures/
 .test-build/
+
+# Cloudflare OAuth 敏感文件
+worker/cf-*.json
+worker/cf-*.txt
+worker/login.log
+worker/node_modules/
