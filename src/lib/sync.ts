@@ -464,10 +464,28 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
     let manifest: ManifestV2 | ManifestV3 | null = null
     const partIds: string[] = []
     if (b64.length <= SINGLE_BLOB_MAX) {
-      const singleId = await createChunk(b64)
-      if (singleId) {
-        manifest = { version: 3, updatedAt, origin, encoding: 'gzip-b64-single', part: singleId }
-        partIds.push(singleId)
+      // 复用已有数据 blob：直接 PUT 覆盖，全程 0 次 POST。
+      // 实测 JSONBlob 对「POST 创建新 blob」限流远严于「PUT 更新已有 blob」（2026-07-25：
+      // 浏览器端 POST 连续 429 导致同步失败，而 PUT 正常），复用可显著降低同步失败率。
+      const reuseId = oldParts.length === 1 ? oldParts[0] : null
+      if (reuseId) {
+        const putResp = await fetchWithRetry(`${API_BASE}/${reuseId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(b64),
+        })
+        if (putResp && putResp.ok) {
+          manifest = { version: 3, updatedAt, origin, encoding: 'gzip-b64-single', part: reuseId }
+          partIds.push(reuseId)
+        }
+        // PUT 失败（blob 已过期被删等）→ 回落到 POST 新建
+      }
+      if (!manifest) {
+        const singleId = await createChunk(b64)
+        if (singleId) {
+          manifest = { version: 3, updatedAt, origin, encoding: 'gzip-b64-single', part: singleId }
+          partIds.push(singleId)
+        }
       }
     }
     if (!manifest) {
@@ -487,8 +505,10 @@ export async function pushRemote(state: SharedState, origin: string, knownRemote
     })
     if (!resp || !resp.ok) return { status: 'error' }
 
-    // 清理旧分片（尽力而为，不影响主流程）
-    for (const id of oldParts) deleteChunk(id)
+    // 清理旧分片（尽力而为，不影响主流程）；复用中的 blob 绝不能删
+    for (const id of oldParts) {
+      if (!partIds.includes(id)) deleteChunk(id)
+    }
     return { status: 'pushed', updatedAt }
   } catch {
     return { status: 'error' }
