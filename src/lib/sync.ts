@@ -77,8 +77,9 @@ const SYNC_URL_KEY = 'hireflow-sync-url'
 const CLIENT_ID_KEY = 'hireflow-client-id'
 /** 团队同步口令仅存本机 localStorage，不随数据同步（口令本身绝不能上云） */
 const PASSPHRASE_KEY = 'hireflow-sync-passphrase'
-/** 单个分片的最大字符数（blob 上限 10KB，留足余量） */
-const CHUNK_SIZE = 8000
+/** 单个分片的最大字符数。取值 24KB：远低于常见 JSON 存储的单 blob 上限（100KB~1MB），
+ *  同时把一份加密库的拉取请求数从 9+ 降到 3~4 个，显著降低公共存储 429 限流命中率 */
+const CHUNK_SIZE = 24576
 /** 同步密钥派生参数：固定盐 + 迭代次数（所有团队设备必须用相同参数才能派生出同一密钥） */
 const SYNC_KDF_SALT = 'hireflow-sync-envelope-v2'
 const SYNC_KDF_ITERATIONS = 100_000
