@@ -17,8 +17,14 @@ export function detectKind(fileName: string): ResumeFileKind | null {
   return null
 }
 
-/** 扫描件 OCR 最多处理的页数（简历页数有限，防止超大文件卡死） */
-const OCR_MAX_PAGES = 5
+/** 扫描件 OCR 最多处理的页数（简历扫描件常见 6-10 页，防止超大文件卡死） */
+const OCR_MAX_PAGES = 10
+/** 云 OCR 端点（Pages Function 代理，密钥在服务端环境变量；与同步接口同域跨域访问） */
+const OCR_API_URL = 'https://hireflow-store-api.pages.dev/api/ocr'
+/** 云 OCR 单页请求超时（云端识别含网络往返，给足但不无限等待） */
+const CLOUD_OCR_TIMEOUT_MS = 60 * 1000
+/** 预处理后有效字符低于该值时视为「预处理反而变差」，用原图重识别一次取更优结果 */
+const PREPROCESS_FALLBACK_MIN_VALID = 20
 /** 单文件大小上限：超过直接拒绝（内存与解析耗时护栏） */
 export const MAX_FILE_SIZE = 20 * 1024 * 1024
 /** Tesseract 单页 OCR 超时：超时按该页识别失败处理，不得永远「解析中」 */
@@ -126,6 +132,80 @@ function enhanceCanvasForOcr(canvas: HTMLCanvasElement): void {
   ctx.putImageData(img, 0, 0)
 }
 
+/**
+ * 自适应二值化（局部均值窗口法）：灰度低于 w×w 邻域均值 × RATIO 判为黑，否则为白。
+ * 用积分图把窗口求和降为 O(1)，整页 O(n)，A4 @ scale 3（约 2500×3500）在百毫秒内完成。
+ * 这是小字号/浅淡扫描件识别率的关键步骤；对彩色底纹/照片页可能反而有害 → 上层有原图回退兜底。
+ * 前置条件：已灰度化（enhanceCanvasForOcr 之后调用），只读 R 通道。
+ */
+function binarizeCanvasAdaptive(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const { width, height } = canvas
+  const img = ctx.getImageData(0, 0, width, height)
+  const d = img.data
+  const stride = width + 1
+  // 积分图：Uint32 足够（255 × 约 875 万像素 ≈ 2.2e9 < 2^32）
+  const integral = new Uint32Array(stride * (height + 1))
+  for (let y = 0; y < height; y++) {
+    let rowSum = 0
+    const rowOff = (y + 1) * stride
+    const prevOff = y * stride
+    for (let x = 0; x < width; x++) {
+      rowSum += d[(y * width + x) * 4]
+      integral[rowOff + x + 1] = integral[prevOff + x + 1] + rowSum
+    }
+  }
+  // 窗口半径随分辨率自适应（约 1-2 个字宽）：过小会填死笔画，过大失去局部性
+  const r = Math.max(10, Math.min(40, Math.round(Math.min(width, height) / 100)))
+  const RATIO = 0.9
+  for (let y = 0; y < height; y++) {
+    const y0 = Math.max(0, y - r)
+    const y1 = Math.min(height - 1, y + r)
+    for (let x = 0; x < width; x++) {
+      const x0 = Math.max(0, x - r)
+      const x1 = Math.min(width - 1, x + r)
+      const sum =
+        integral[(y1 + 1) * stride + x1 + 1] -
+        integral[y0 * stride + x1 + 1] -
+        integral[(y1 + 1) * stride + x0] +
+        integral[y0 * stride + x0]
+      const count = (y1 - y0 + 1) * (x1 - x0 + 1)
+      const i = (y * width + x) * 4
+      const v = d[i] * count < sum * RATIO ? 0 : 255
+      d[i] = d[i + 1] = d[i + 2] = v
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+}
+
+/** 本地 OCR 预处理开关（默认开；个别扫描件原图效果更好时可在控制台关闭） */
+let ocrPreprocessEnabled = true
+export function setOcrPreprocess(enabled: boolean): void {
+  ocrPreprocessEnabled = enabled
+}
+
+/** 本地 OCR 预处理管线：灰度化 → 直方图对比度拉伸 → 自适应二值化（全程毫秒级，直接操作 ImageData 像素） */
+function preprocessCanvasForOcr(canvas: HTMLCanvasElement): void {
+  enhanceCanvasForOcr(canvas)
+  binarizeCanvasAdaptive(canvas)
+}
+
+/** 复制 canvas（预处理是原地操作，回退用原图重识别时需要未处理的副本） */
+function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
+  const copy = document.createElement('canvas')
+  copy.width = src.width
+  copy.height = src.height
+  copy.getContext('2d')?.drawImage(src, 0, 0)
+  return copy
+}
+
+/** 统计 OCR 文本的有效字符数（CJK/字母/数字），用于比较两次识别结果的优劣 */
+function countValidChars(text: string): number {
+  let n = 0
+  for (const ch of text) if (/[\p{L}\p{N}]/u.test(ch)) n++
+  return n
+}
 /** 把指定 PDF 页面渲染为 JPEG dataURL（供视觉模型识别；scale 2.5 / 质量 0.92 兼顾细小文字） */
 async function renderPdfPages(
   doc: pdfjs.PDFDocumentProxy,
@@ -147,16 +227,16 @@ interface OcrOutcome {
   warnings: string[]
 }
 
-/** 本地 OCR 兜底：Tesseract 中英文联合模型识别（离线可用，精度低于视觉模型） */
+/** 本地 OCR 兜底：Tesseract 中英文联合模型识别（离线可用，精度低于视觉/云端模型） */
 async function ocrWithTesseract(
   doc: pdfjs.PDFDocumentProxy,
   pageNums: number[],
   onProgress?: (msg: string) => void,
 ): Promise<OcrOutcome> {
-  const { createWorker } = await import('tesseract.js')
+  const { createWorker, PSM } = await import('tesseract.js')
   let lastReported = -1
-  const makeWorker = () =>
-    createWorker(['chi_sim', 'eng'], 1, {
+  const makeWorker = async () => {
+    const w = await createWorker(['chi_sim', 'eng'], 1, {
       logger: (m: { status: string; progress?: number }) => {
         if (m.status === 'recognizing text' && typeof m.progress === 'number') {
           const pct = Math.round(m.progress * 10)
@@ -167,31 +247,56 @@ async function ocrWithTesseract(
         }
       },
     })
+    // PSM.AUTO：自动版面分析（含分栏/表格检测），不强制单栏，适配双栏排版简历
+    await w.setParameters({ tessedit_pageseg_mode: PSM.AUTO })
+    return w
+  }
   let worker = await makeWorker()
   const result = new Map<number, string>()
   const warnings: string[] = []
-  try {
-    for (const p of pageNums) {
-      onProgress?.(`本地 OCR 识别第 ${p} 页（共 ${pageNums.length} 页，首次使用需下载中英文模型）…`)
-      // scale 3 + 灰度/对比度增强 + PNG 无损，尽量保住细小文字
-      const canvas = await renderPageCanvas(doc, p, 3)
-      enhanceCanvasForOcr(canvas)
-      // 单页 3 分钟超时护栏：超时按该页识别失败处理，后续页继续（worker 可能仍卡死，重建）
-      let timedOut = false
+  /** 单页识别 + 3 分钟超时护栏；超时返回空文本并标记（调用方负责重建 worker） */
+  const recognizeWithTimeout = async (canvas: HTMLCanvasElement): Promise<{ text: string; timedOut: boolean }> => {
+    let timedOut = false
+    try {
       const { data } = await Promise.race([
         worker.recognize(canvas.toDataURL('image/png')),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
             timedOut = true
-            reject(new Error(`第 ${p} 页 OCR 超时`))
+            reject(new Error('OCR 超时'))
           }, OCR_PAGE_TIMEOUT_MS)
         }),
-      ]).catch(async (e: unknown) => {
-        if (!timedOut) throw e
-        warnings.push(`第 ${p} 页本地 OCR 识别超时（超过 3 分钟），该页内容未识别`)
-        return { data: { text: '' } }
-      })
-      result.set(p, data.text)
+      ])
+      return { text: data.text, timedOut: false }
+    } catch (e) {
+      if (timedOut) return { text: '', timedOut: true }
+      throw e
+    }
+  }
+  try {
+    for (const p of pageNums) {
+      onProgress?.(`本地 OCR 识别第 ${p} 页（共 ${pageNums.length} 页，首次使用需下载中英文模型）…`)
+      // scale 3 + PNG 无损尽量保住细小文字；预处理管线可开关（setOcrPreprocess）
+      const rendered = await renderPageCanvas(doc, p, 3)
+      let input = rendered
+      let fallbackInput: HTMLCanvasElement | null = null
+      if (ocrPreprocessEnabled) {
+        input = cloneCanvas(rendered)
+        preprocessCanvasForOcr(input)
+        fallbackInput = rendered
+      }
+      const first = await recognizeWithTimeout(input)
+      let text = first.text
+      let timedOut = first.timedOut
+      // 预处理反而变差（有效字符极少）时，用原图重识别一次，取字符数更多的结果
+      if (!timedOut && fallbackInput && countValidChars(text) < PREPROCESS_FALLBACK_MIN_VALID) {
+        onProgress?.(`第 ${p} 页预处理后字符过少，改用原图重识别…`)
+        const second = await recognizeWithTimeout(fallbackInput)
+        if (!second.timedOut && countValidChars(second.text) > countValidChars(text)) text = second.text
+        timedOut = second.timedOut
+      }
+      if (timedOut) warnings.push(`第 ${p} 页本地 OCR 识别超时（超过 3 分钟），该页内容未识别`)
+      result.set(p, text)
       if (timedOut) {
         // 超时的 worker 内部任务可能仍在执行，直接废弃并为后续页重建
         try {
@@ -212,13 +317,55 @@ async function ocrWithTesseract(
   }
 }
 
-/** 扫描页 OCR：优先视觉大模型，失败或未配置时回退本地 Tesseract；仅处理 pageNums 指定的页 */
+/**
+ * 云 OCR（可选引擎）：POST 单页图片到 Pages Function 代理（百度通用文字识别高精度版，
+ * 密钥存服务端环境变量，不进客户端）。返回 null 表示云端不可用（501 未配置/网络失败），
+ * 调用方回退本地 Tesseract；个别页失败时其余页保留云端结果。
+ */
+async function ocrWithCloud(
+  doc: pdfjs.PDFDocumentProxy,
+  pageNums: number[],
+  onProgress?: (msg: string) => void,
+): Promise<OcrOutcome | null> {
+  const result = new Map<number, string>()
+  const warnings: string[] = []
+  for (const p of pageNums) {
+    onProgress?.(`云端 OCR 识别第 ${p} 页（共 ${pageNums.length} 页）…`)
+    // JPEG 0.92 控制体积（服务端单请求体上限 4MB），云端高精度模型无需本地预处理
+    const canvas = await renderPageCanvas(doc, p, 2.5)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92)
+    try {
+      const resp = await fetch(OCR_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ image: dataUrl.split(',')[1] ?? '' }),
+        signal: AbortSignal.timeout(CLOUD_OCR_TIMEOUT_MS),
+      })
+      if (resp.status === 501) return null // 未配置云 OCR：整批回退本地
+      if (!resp.ok) throw new Error(`云端 OCR 返回 ${resp.status}`)
+      const data = await resp.json()
+      if (typeof data?.text !== 'string') throw new Error('云端 OCR 响应格式异常')
+      result.set(p, data.text)
+    } catch (e) {
+      // 首页就失败（网络/服务端故障）：整批回退本地，避免半云半本地的混乱状态
+      if (result.size === 0) {
+        console.warn('云端 OCR 不可用，回退本地 OCR：', e)
+        return null
+      }
+      warnings.push(`第 ${p} 页云端 OCR 识别失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+  return { result, warnings }
+}
+
+/** 扫描页 OCR：视觉大模型 → 云 OCR → 本地 Tesseract 三级回退；仅处理 pageNums 指定的页 */
 async function ocrPdf(
   doc: pdfjs.PDFDocumentProxy,
   pageNums: number[],
   onProgress?: (msg: string) => void,
 ): Promise<OcrOutcome> {
   const config = getLlmConfig()
+  // 1) 用户已配置视觉大模型：精度最高，优先
   if (isVisionReady(config)) {
     try {
       onProgress?.('正在使用 AI 视觉模型识别扫描页…')
@@ -231,10 +378,34 @@ async function ocrPdf(
       }
       if ([...result.values()].some((t) => t.trim())) return { result, warnings: [] }
     } catch (e) {
-      console.warn('视觉模型识别失败，回退本地 OCR：', e)
-      onProgress?.('视觉模型不可用，切换本地 OCR…')
+      console.warn('视觉模型识别失败，尝试云端 OCR：', e)
+      onProgress?.('视觉模型不可用，尝试云端 OCR…')
     }
   }
+  // 2) 云 OCR（可选，密钥在服务端；501/网络失败返回 null 回退本地）
+  try {
+    const cloud = await ocrWithCloud(doc, pageNums, onProgress)
+    if (cloud) {
+      // 云端未识别出文字的页面（空结果或识别失败），回退本地 Tesseract 补齐
+      const missing = pageNums.filter((p) => !(cloud.result.get(p) ?? '').trim())
+      if (missing.length > 0 && missing.length < pageNums.length) {
+        onProgress?.('部分页面云端未识别，回退本地 OCR 补齐…')
+        const local = await ocrWithTesseract(doc, missing, onProgress)
+        local.result.forEach((t, p) => {
+          if (t.trim()) cloud.result.set(p, t)
+        })
+        cloud.warnings.push(...local.warnings)
+      } else if (missing.length === pageNums.length) {
+        // 云端全部页空结果：视为不可用，整批走本地
+        return ocrWithTesseract(doc, pageNums, onProgress)
+      }
+      return cloud
+    }
+  } catch (e) {
+    console.warn('云端 OCR 异常，回退本地 OCR：', e)
+  }
+  // 3) 本地 Tesseract 兜底
+  onProgress?.('云端 OCR 不可用，切换本地 OCR…')
   return ocrWithTesseract(doc, pageNums, onProgress)
 }
 
