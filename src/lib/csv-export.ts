@@ -2,8 +2,11 @@ import type { Resume, User } from '@/types'
 import { STAGE_LABELS } from '@/types'
 
 function escapeCsvCell(value: string): string {
-  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
-  return value
+  // 公式注入防护：以 = + - @ 或 Tab 开头的字符串前置单引号，防止 Excel 打开时执行为公式
+  let v = value
+  if (/^[\t=+\-@]/.test(v)) v = `'${v}`
+  if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`
+  return v
 }
 
 /** 把简历列表导出为 CSV 文本（含 BOM，Excel 直接打开不乱码） */

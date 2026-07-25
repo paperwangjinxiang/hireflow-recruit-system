@@ -2,12 +2,12 @@ import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import {
   BriefcaseBusiness, Plus, MapPin, School, BedDouble, Users as UsersIcon,
-  Lock, Unlock, Trash2, Ban, RotateCcw, Search,
+  Lock, Unlock, Trash2, Ban, RotateCcw, Search, AlertTriangle, ShieldAlert,
 } from 'lucide-react'
 import { useStore } from '@/lib/store'
 import { SCHOOL_LEVELS, TEACHER_SUBJECTS, STAGE_LABELS, STAGE_COLORS, type Job, type Resume, type SchoolLevel } from '@/types'
 import { tagColor } from '@/lib/tags'
-import { computeMatchScore, scoreColor, scoreLabel } from '@/lib/match'
+import { computeMatchScore, scoreColor, scoreLabel, checkCertFit } from '@/lib/match'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -140,7 +140,24 @@ export default function Jobs() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>关闭该职位？</AlertDialogTitle>
-            <AlertDialogDescription>关闭后，锁定在该职位上的简历将被释放回筛选池。</AlertDialogDescription>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>关闭后，锁定在该职位上的简历将被释放回筛选池。</p>
+                {(() => {
+                  // 在途简历（面试/录用阶段）不会被自动释放，关闭前显眼提示，不强制阻断
+                  const inTransit = closeJobId
+                    ? resumes.filter((r) => r.jobId === closeJobId && (r.stage === 'interview' || r.stage === 'offered'))
+                    : []
+                  if (inTransit.length === 0) return null
+                  return (
+                    <p className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                      <AlertTriangle className="h-4 w-4 shrink-0" />
+                      该职位还有 {inTransit.length} 份在途简历（面试/录用阶段），请先处理；关闭不会自动释放这些简历
+                    </p>
+                  )
+                })()}
+              </div>
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
@@ -294,6 +311,8 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
   const { resumes, currentUser, dispatch } = useStore()
   const [kw, setKw] = useState('')
   const [onlySameLevel, setOnlySameLevel] = useState(true)
+  // 教资硬约束确认弹窗：warn/block 时挂起待锁定的简历（与详情页 ResumeDetail 分级口径一致）
+  const [certCheck, setCertCheck] = useState<{ resumeId: string; level: 'warn' | 'block'; messages: string[] } | null>(null)
 
   const candidates = useMemo(() => {
     const keyword = kw.trim()
@@ -305,6 +324,33 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
       .map((r) => ({ resume: r, match: computeMatchScore(r, job) }))
       .sort((a, b) => b.match.score - a.match.score || b.resume.rating - a.resume.rating)
   }, [resumes, kw, onlySameLevel, job])
+
+  /** 教资硬约束检查后的锁定入口：ok 直接锁定，warn/block 先弹确认 */
+  const tryLock = (r: Resume) => {
+    const fit = checkCertFit(r, job)
+    if (fit.level === 'ok') {
+      doLock(r.id)
+    } else {
+      setCertCheck({ resumeId: r.id, level: fit.level, messages: fit.messages })
+    }
+  }
+
+  const doLock = (resumeId: string, force = false) => {
+    const r = resumes.find((x) => x.id === resumeId)
+    if (!r) return
+    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符仅管理员可显式强制（双保险）
+    const fit = checkCertFit(r, job)
+    if (fit.level === 'block' && !force) {
+      toast.error(fit.messages[0] ?? '教资学段不满足岗位要求，无法锁定')
+      setCertCheck(null)
+      return
+    }
+    dispatch({ type: 'matchJob', resumeId, jobId: job.id, actorId: currentUser.id, force })
+    toast.success(`已将 ${r.name} 锁定到「${job.school}」`)
+    setCertCheck(null)
+  }
+
+  const certCheckResume = certCheck ? resumes.find((r) => r.id === certCheck.resumeId) : null
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -334,6 +380,9 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
                   <Badge variant="outline" className={`text-[10px] ${scoreColor(match.score)}`} title={match.reasons.join('；')}>
                     匹配 {match.score} 分 · {scoreLabel(match.score)}
                   </Badge>
+                  {checkCertFit(r, job).level === 'block' && (
+                    <Badge variant="outline" className="border-rose-200 bg-rose-50 text-[10px] text-rose-600">⚠ 学段不符</Badge>
+                  )}
                 </div>
                 <p className="mt-0.5 truncate text-xs text-slate-500">
                   {r.university} · {r.major}（{r.fullTime}）· {r.gradYear > 0 ? `${r.gradYear}届` : '届别未知'} · {r.experience}年经验 · {r.hometown || '籍贯未知'}
@@ -344,13 +393,7 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
                   ))}
                 </div>
               </div>
-              <Button
-                size="sm"
-                onClick={() => {
-                  dispatch({ type: 'matchJob', resumeId: r.id, jobId: job.id, actorId: currentUser.id })
-                  toast.success(`已将 ${r.name} 锁定到「${job.school}」`)
-                }}
-              >
+              <Button size="sm" onClick={() => tryLock(r)}>
                 <Lock className="mr-1.5 h-3.5 w-3.5" />锁定
               </Button>
             </li>
@@ -362,6 +405,40 @@ function MatchResumeDialog({ job, onClose }: { job: Job; onClose: () => void }) 
           )}
         </ul>
       </DialogContent>
+
+      {/* 教资硬约束确认弹窗（与详情页分级口径一致：warn 确认即可，block 仅管理员可强制） */}
+      <AlertDialog open={!!certCheck} onOpenChange={(o) => !o && setCertCheck(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className={`flex items-center gap-2 ${certCheck?.level === 'block' ? 'text-rose-600' : 'text-amber-600'}`}>
+              {certCheck?.level === 'block' ? <ShieldAlert className="h-5 w-5" /> : <AlertTriangle className="h-5 w-5" />}
+              {certCheck?.level === 'block' ? '教资学段不满足岗位要求' : '教资信息确认'}
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <ul className={`space-y-1.5 rounded-md border p-3 text-sm ${certCheck?.level === 'block' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                {certCheckResume && <li className="font-medium">候选人：{certCheckResume.name}</li>}
+                {certCheck?.messages.map((m, i) => <li key={i}>· {m}</li>)}
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            {certCheck?.level === 'warn' && (
+              <AlertDialogAction onClick={() => certCheck && doLock(certCheck.resumeId)}>
+                确认锁定
+              </AlertDialogAction>
+            )}
+            {certCheck?.level === 'block' && currentUser.role === 'admin' && (
+              <AlertDialogAction
+                className="bg-rose-600 hover:bg-rose-700"
+                onClick={() => certCheck && doLock(certCheck.resumeId, true)}
+              >
+                强制锁定（管理员）
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }

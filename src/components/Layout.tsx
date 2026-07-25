@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
-import { LayoutDashboard, Users, FileUp, Contact, KeyRound, LogOut, Sparkles, BriefcaseBusiness, ClipboardList } from 'lucide-react'
+import { LayoutDashboard, Users, FileUp, Contact, KeyRound, LogOut, Sparkles, BriefcaseBusiness, ClipboardList, Lock } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
-import { clearSession, generateSalt, hashPassword } from '@/lib/auth'
+import { clearSession, createCredential, validatePasswordStrength, verifyPassword } from '@/lib/auth'
 import { ROLE_LABELS } from '@/types'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -23,6 +23,51 @@ const NAV = [
   { to: '/team', label: '团队成员', icon: Users },
 ]
 
+/** 云端加密数据锁定横幅：本机无同步口令或口令不匹配时提示输入，输入后自动重试拉取 */
+function SyncLockedBanner() {
+  const { syncLocked, submitSyncPassphrase } = useStore()
+  const [pass, setPass] = useState('')
+  const [busy, setBusy] = useState(false)
+  if (!syncLocked) return null
+
+  const submit = async () => {
+    if (!pass.trim()) {
+      toast.error('请输入团队同步口令')
+      return
+    }
+    setBusy(true)
+    try {
+      await submitSyncPassphrase(pass.trim())
+      setPass('')
+      toast.success('已保存口令并重试同步')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-b border-amber-200 bg-amber-50 px-6 py-2.5">
+      <p className="flex items-center gap-1.5 text-sm text-amber-800">
+        <Lock className="h-4 w-4 shrink-0" />
+        云端数据已加密，本机尚未输入团队同步口令（或口令不匹配），云端更新暂未应用。
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          type="password"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          placeholder="请输入团队同步口令"
+          className="h-8 w-56 bg-white text-xs"
+          onKeyDown={(e) => e.key === 'Enter' && submit()}
+        />
+        <Button size="sm" className="h-8 text-xs" disabled={busy} onClick={submit}>
+          {busy ? '解锁中…' : '解锁并同步'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 /** 修改密码对话框 */
 function ChangePasswordDialog() {
   const { currentUser, dispatch } = useStore()
@@ -33,8 +78,9 @@ function ChangePasswordDialog() {
   const [busy, setBusy] = useState(false)
 
   const submit = async () => {
-    if (newPwd.length < 6) {
-      toast.error('新密码长度至少 6 位')
+    const strengthError = validatePasswordStrength(newPwd)
+    if (strengthError) {
+      toast.error(strengthError)
       return
     }
     if (newPwd !== confirmPwd) {
@@ -43,13 +89,12 @@ function ChangePasswordDialog() {
     }
     setBusy(true)
     try {
-      const oldHash = await hashPassword(oldPwd, currentUser.salt)
-      if (oldHash !== currentUser.passwordHash) {
+      const verified = await verifyPassword(currentUser, oldPwd)
+      if (!verified.ok) {
         toast.error('原密码错误')
         return
       }
-      const salt = generateSalt()
-      const passwordHash = await hashPassword(newPwd, salt)
+      const { salt, passwordHash } = await createCredential(newPwd)
       dispatch({ type: 'changePassword', userId: currentUser.id, passwordHash, salt })
       toast.success('密码已修改，下次登录请使用新密码')
       setOpen(false)
@@ -77,7 +122,7 @@ function ChangePasswordDialog() {
           </div>
           <div className="space-y-1.5">
             <Label>新密码</Label>
-            <Input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} placeholder="至少 6 位" />
+            <Input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} placeholder="至少 8 位，含字母和数字" />
           </div>
           <div className="space-y-1.5">
             <Label>确认新密码</Label>
@@ -154,6 +199,7 @@ export default function Layout() {
         </div>
       </aside>
       <main className="flex-1 overflow-auto">
+        <SyncLockedBanner />
         <Outlet />
       </main>
     </div>

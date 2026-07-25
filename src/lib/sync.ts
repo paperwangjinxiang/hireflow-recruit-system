@@ -5,7 +5,15 @@ import type { Interview, Job, Resume, User } from '@/types'
  * JSONBlob 匿名层单个 blob 上限 10KB，因此团队共享数据
  * 先 gzip 压缩 + base64，再分片为多个 blob 存储，由 manifest blob 索引。
  * 支持在设置中替换为自定义端点（任何支持 GET / PUT JSON 的存储均可，
- * 自定义端点使用 v1 整体存储格式，不做分片）。
+ * 自定义端点使用 v1 整体存储格式，不做分片、不加密）。
+ *
+ * 加密（v2 envelope）：默认端点下若本机设置了「团队同步口令」，
+ * 明文 state 先 gzip，再用 AES-GCM 加密（密钥由口令经 PBKDF2-SHA256 派生），
+ * 打包为 envelope JSON 后再走原有的 gzip+分片流程：
+ *   { v: 2, enc: true, iv: <hex>, fp: <密钥指纹>, data: <hex> }
+ * envelope 本身是合法 JSON，保活脚本 cloud_keepalive.py 只做 gzip+JSON 的
+ * 原样往返搬运、不解析业务字段，因此加密后保活逻辑不受影响。
+ * 未设置口令前维持明文推送，避免首次启用时锁死。
  */
 
 export interface SharedState {
@@ -31,6 +39,28 @@ interface ManifestV2 {
   parts: string[]
 }
 
+/** 加密信封：gzip 后的 payload 经 AES-GCM 加密（iv/data 为 hex） */
+interface SyncEnvelope {
+  v: 2
+  enc: true
+  iv: string
+  /** 密钥指纹：派生密钥 SHA-256 的前 4 字节 hex，用于快速识别口令是否正确 */
+  fp: string
+  data: string
+}
+
+/** 拉取结果：ok=成功（可能为空库）；locked=云端已加密但本机无口令或口令不匹配；error=网络/解析失败 */
+export type PullResult =
+  | { status: 'ok'; payload: RemotePayload }
+  | { status: 'locked'; fingerprint: string | null }
+  | { status: 'error' }
+
+/** 推送结果：pushed=成功；conflict=远端比本地新（应先拉取应用再推）；error=失败 */
+export type PushResult =
+  | { status: 'pushed'; updatedAt: number }
+  | { status: 'conflict' }
+  | { status: 'error' }
+
 const API_BASE = 'https://jsonblob.com/api/jsonBlob'
 
 /**
@@ -45,8 +75,13 @@ export const DEFAULT_SYNC_URL = `${API_BASE}/019f92e6-15c3-7fee-85d8-2d836de4da6
 
 const SYNC_URL_KEY = 'hireflow-sync-url'
 const CLIENT_ID_KEY = 'hireflow-client-id'
+/** 团队同步口令仅存本机 localStorage，不随数据同步（口令本身绝不能上云） */
+const PASSPHRASE_KEY = 'hireflow-sync-passphrase'
 /** 单个分片的最大字符数（blob 上限 10KB，留足余量） */
 const CHUNK_SIZE = 8000
+/** 同步密钥派生参数：固定盐 + 迭代次数（所有团队设备必须用相同参数才能派生出同一密钥） */
+const SYNC_KDF_SALT = 'hireflow-sync-envelope-v2'
+const SYNC_KDF_ITERATIONS = 100_000
 
 /** 指针解析缓存 */
 let pointerCache: { url: string; at: number } | null = null
@@ -95,6 +130,26 @@ export function getClientId(): string {
   return id
 }
 
+// ---- 团队同步口令（本机存储，不上云） ----
+
+export function getSyncPassphrase(): string {
+  try {
+    return localStorage.getItem(PASSPHRASE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** 设置/清除团队同步口令（空字符串 = 清除，清除后回到明文推送） */
+export function setSyncPassphrase(passphrase: string) {
+  try {
+    if (passphrase) localStorage.setItem(PASSPHRASE_KEY, passphrase)
+    else localStorage.removeItem(PASSPHRASE_KEY)
+  } catch {
+    // 存储不可用时口令仅本次会话生效的愿望无法实现，静默忽略
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 带指数退避重试的 fetch：429 限流 / 5xx 服务端错误 / 网络错误按 1s / 3s / 9s 退避，最多重试 3 次 */
@@ -121,9 +176,13 @@ async function fetchWithRetry(input: string, init: RequestInit, retries = 3): Pr
 
 // ---- gzip + base64 编解码（浏览器原生 CompressionStream） ----
 
-async function compressToB64(text: string): Promise<string> {
+async function compressToBytes(text: string): Promise<Uint8Array> {
   const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))
-  const bytes = new Uint8Array(await new Response(stream).arrayBuffer())
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+async function compressToB64(text: string): Promise<string> {
+  const bytes = await compressToBytes(text)
   let binary = ''
   for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
@@ -135,6 +194,98 @@ async function decompressFromB64(b64: string): Promise<string> {
   const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
   return new Response(stream).text()
+}
+
+async function decompressToBytes(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes.buffer as ArrayBuffer]).stream().pipeThrough(new DecompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
+}
+
+// ---- AES-GCM 加解密（密钥由团队同步口令经 PBKDF2 派生） ----
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+function fromHex(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return out
+}
+
+interface DerivedSyncKey {
+  key: CryptoKey
+  /** 密钥指纹（SHA-256 前 4 字节 hex），随 envelope 上云用于口令匹配校验，无法反推口令 */
+  fingerprint: string
+}
+
+/** 由团队同步口令派生 AES-GCM 密钥与指纹；口令为空返回 null */
+async function deriveSyncKey(passphrase: string): Promise<DerivedSyncKey | null> {
+  if (!passphrase) return null
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveKey', 'deriveBits'],
+  )
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(SYNC_KDF_SALT), iterations: SYNC_KDF_ITERATIONS },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  )
+  const fpBits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(`${SYNC_KDF_SALT}:fp`), iterations: SYNC_KDF_ITERATIONS },
+    keyMaterial,
+    256,
+  )
+  const fingerprint = toHex(new Uint8Array(fpBits)).slice(0, 8)
+  return { key, fingerprint }
+}
+
+/** 加密明文 state：json → gzip → AES-GCM → envelope */
+async function encryptState(state: SharedState, passphrase: string): Promise<SyncEnvelope | null> {
+  const derived = await deriveSyncKey(passphrase)
+  if (!derived) return null
+  const gzipped = await compressToBytes(JSON.stringify(state))
+  const iv = new Uint8Array(12)
+  crypto.getRandomValues(iv)
+  const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derived.key, gzipped as BufferSource)
+  return { v: 2, enc: true, iv: toHex(iv), fp: derived.fingerprint, data: toHex(new Uint8Array(cipher)) }
+}
+
+/**
+ * 解密 envelope：成功返回 state；无口令/指纹不匹配/解密失败返回 'locked'；结构异常返回 null
+ */
+async function decryptEnvelope(envelope: SyncEnvelope): Promise<SharedState | 'locked' | null> {
+  if (typeof envelope.iv !== 'string' || typeof envelope.data !== 'string') return null
+  const passphrase = getSyncPassphrase()
+  if (!passphrase) return 'locked'
+  const derived = await deriveSyncKey(passphrase)
+  if (!derived) return 'locked'
+  // 指纹快速校验：口令错误时不必尝试解密
+  if (typeof envelope.fp === 'string' && envelope.fp && envelope.fp !== derived.fingerprint) return 'locked'
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromHex(envelope.iv) as BufferSource },
+      derived.key,
+      fromHex(envelope.data) as BufferSource,
+    )
+    const textBytes = await decompressToBytes(new Uint8Array(plain))
+    return JSON.parse(new TextDecoder().decode(textBytes)) as SharedState
+  } catch {
+    return 'locked'
+  }
+}
+
+/** 判断对象是否为加密信封 */
+function isEnvelope(data: unknown): data is SyncEnvelope {
+  const d = data as SyncEnvelope | null
+  return !!d && d.v === 2 && d.enc === true && typeof d.data === 'string'
 }
 
 /** 创建分片 blob，返回其 id；失败返回 null */
@@ -164,24 +315,24 @@ async function deleteChunk(id: string): Promise<void> {
   await fetchWithRetry(`${API_BASE}/${id}`, { method: 'DELETE' }, 0)
 }
 
-/** 拉取云端数据；网络失败返回 undefined，成功返回 payload（可能为空库） */
-export async function pullRemote(): Promise<RemotePayload | undefined> {
+/** 拉取云端数据；返回结构化结果（见 PullResult） */
+export async function pullRemote(): Promise<PullResult> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const url = await resolveManifestUrl(attempt > 0)
     const resp = await fetchWithRetry(url, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
     }, 1)
-    if (!resp) return undefined
+    if (!resp) return { status: 'error' }
     if (resp.status === 404 && !isCustomSyncUrl() && attempt === 0) {
       continue // manifest 可能已过期，强制刷新指针重试一次
     }
-    if (!resp.ok) return undefined
+    if (!resp.ok) return { status: 'error' }
     let data: unknown
     try {
       data = await resp.json()
     } catch {
-      return undefined
+      return { status: 'error' }
     }
 
     // v2 分片格式（仅默认端点）
@@ -190,64 +341,104 @@ export async function pullRemote(): Promise<RemotePayload | undefined> {
       const chunks: string[] = []
       for (const id of manifest.parts) {
         const chunk = await fetchChunk(id)
-        if (chunk === null) return undefined // 分片缺失视为本次拉取失败，下轮重试
+        if (chunk === null) return { status: 'error' } // 分片缺失视为本次拉取失败，下轮重试
         chunks.push(chunk)
       }
       try {
         const text = await decompressFromB64(chunks.join(''))
-        const state = JSON.parse(text) as SharedState
-        return { version: 1, updatedAt: manifest.updatedAt, origin: manifest.origin, state }
+        const parsed: unknown = JSON.parse(text)
+        // 加密信封：需要本机口令解密
+        if (isEnvelope(parsed)) {
+          const state = await decryptEnvelope(parsed)
+          if (state === 'locked') return { status: 'locked', fingerprint: parsed.fp ?? null }
+          if (state === null) return { status: 'error' }
+          return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt, origin: manifest.origin, state } }
+        }
+        // 旧明文格式：直接作为 SharedState 兼容解析
+        const state = parsed as SharedState
+        return { status: 'ok', payload: { version: 1, updatedAt: manifest.updatedAt, origin: manifest.origin, state } }
       } catch {
-        return undefined
+        return { status: 'error' }
       }
     }
 
-    // v1 整体格式（自定义端点或历史数据）
+    // v1 整体格式（自定义端点或历史数据，明文）
     const legacy = data as RemotePayload
-    if (typeof legacy?.updatedAt !== 'number') return { version: 1, updatedAt: 0, origin: '', state: null }
-    return legacy
+    if (typeof legacy?.updatedAt !== 'number') {
+      return { status: 'ok', payload: { version: 1, updatedAt: 0, origin: '', state: null } }
+    }
+    return { status: 'ok', payload: legacy }
   }
-  return undefined
+  return { status: 'error' }
 }
 
-/** 推送本地数据到云端；成功返回 updatedAt，失败返回 null */
-export async function pushRemote(state: SharedState, origin: string): Promise<number | null> {
-  const updatedAt = Date.now()
-
-  // 自定义端点：保持 v1 整体存储
+/**
+ * 推送本地数据到云端。
+ * - 推送前先 GET 远端 manifest 比对 updatedAt：远端更新（且非本端写入）时返回 conflict，
+ *   调用方应先拉取应用远端数据再重新推送，避免整库覆盖别人的修改。
+ * - 逻辑时钟：updatedAt = Math.max(远端updatedAt + 1, Date.now())，防止本机时钟漂移导致新旧判定失效。
+ * - 本机已设置团队同步口令时（默认端点），payload 加密为 v2 envelope 后再分片推送。
+ */
+export async function pushRemote(state: SharedState, origin: string, knownRemoteTs = 0): Promise<PushResult> {
+  // 自定义端点：保持 v1 整体存储（明文，不做冲突检测——单 blob PUT 无法原子比对）
   if (isCustomSyncUrl()) {
+    const updatedAt = Math.max(knownRemoteTs + 1, Date.now())
     const payload: RemotePayload = { version: 1, updatedAt, origin, state }
     const resp = await fetchWithRetry(getSyncUrl(), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
     })
-    return resp && resp.ok ? updatedAt : null
+    return resp && resp.ok ? { status: 'pushed', updatedAt } : { status: 'error' }
   }
 
-  // 默认端点：gzip + 分片
+  // 默认端点：gzip + （可选加密）+ 分片
   try {
     const manifestUrl = await resolveManifestUrl()
-    const b64 = await compressToB64(JSON.stringify(state))
-    const chunks: string[] = []
-    for (let i = 0; i < b64.length; i += CHUNK_SIZE) chunks.push(b64.slice(i, i + CHUNK_SIZE))
 
-    // 记录旧分片以便推送成功后清理
+    // 先读取旧 manifest：冲突检测 + 逻辑时钟基准 + 记录旧分片以便推送成功后清理
     let oldParts: string[] = []
+    let remoteTs = 0
+    let remoteOrigin = ''
     const prevResp = await fetchWithRetry(manifestUrl, { headers: { Accept: 'application/json' }, cache: 'no-store' }, 1)
     if (prevResp?.ok) {
       try {
         const prev = await prevResp.json()
         if (prev?.version === 2 && Array.isArray(prev.parts)) oldParts = prev.parts
+        if (typeof prev?.updatedAt === 'number') remoteTs = prev.updatedAt
+        if (typeof prev?.origin === 'string') remoteOrigin = prev.origin
       } catch {
         // 忽略
       }
     }
 
+    // 远端比别人新写入的数据：先放弃本次推送，由调用方拉取合并后再推
+    if (remoteTs > knownRemoteTs && remoteOrigin && remoteOrigin !== origin) {
+      return { status: 'conflict' }
+    }
+
+    // 逻辑时钟：保证本次写入的 updatedAt 一定大于远端已知的任何值
+    const updatedAt = Math.max(remoteTs + 1, Date.now())
+
+    // 已设置团队同步口令 → 加密推送；未设置维持明文（首次启用不锁死，由设置页引导 admin 配置）
+    const passphrase = getSyncPassphrase()
+    let payloadText: string
+    if (passphrase) {
+      const envelope = await encryptState(state, passphrase)
+      if (!envelope) return { status: 'error' }
+      payloadText = JSON.stringify(envelope)
+    } else {
+      payloadText = JSON.stringify(state)
+    }
+
+    const b64 = await compressToB64(payloadText)
+    const chunks: string[] = []
+    for (let i = 0; i < b64.length; i += CHUNK_SIZE) chunks.push(b64.slice(i, i + CHUNK_SIZE))
+
     const partIds: string[] = []
     for (const chunk of chunks) {
       const id = await createChunk(chunk)
-      if (!id) return null // 已创建的分片留作垃圾，下轮覆盖后清理
+      if (!id) return { status: 'error' } // 已创建的分片留作垃圾，下轮覆盖后清理
       partIds.push(id)
     }
 
@@ -257,12 +448,12 @@ export async function pushRemote(state: SharedState, origin: string): Promise<nu
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(manifest),
     })
-    if (!resp || !resp.ok) return null
+    if (!resp || !resp.ok) return { status: 'error' }
 
     // 清理旧分片（尽力而为，不影响主流程）
     for (const id of oldParts) deleteChunk(id)
-    return updatedAt
+    return { status: 'pushed', updatedAt }
   } catch {
-    return null
+    return { status: 'error' }
   }
 }

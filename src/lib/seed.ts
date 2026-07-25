@@ -3,7 +3,8 @@ import { deriveTags } from '@/lib/tags'
 
 /**
  * 种子用户登录凭据：salt 为每用户固定的 16 位 hex，passwordHash = SHA-256(`${salt}:123456`)。
- * 初始密码均为 123456（登录后可在右上角「修改密码」中更换）。
+ * 初始密码均为 123456（不对外展示，由管理员告知）；mustChangePassword = true，
+ * 首次登录后强制修改密码，同时旧格式凭据会在登录成功时静默升级为 PBKDF2。
  */
 const SEED_CREDENTIALS: Record<string, { salt: string; passwordHash: string }> = {
   'u-admin': { salt: 'a1b2c3d4e5f60718', passwordHash: 'fe17b83da6a7e11f27d19fae5e065cde8b31072b2780eab7ca053051fbc001d3' },
@@ -17,7 +18,8 @@ const SEED_BASE_TIME = 1735689600000 // 2025-01-01，种子用户注册时间基
 
 function seedUser(u: Omit<User, 'phone' | 'passwordHash' | 'salt' | 'status' | 'createdAt'>, phone: string): User {
   const cred = SEED_CREDENTIALS[u.id]
-  return { ...u, phone, salt: cred.salt, passwordHash: cred.passwordHash, status: 'active', createdAt: SEED_BASE_TIME }
+  // 种子用户使用初始密码，首次登录强制改密
+  return { ...u, phone, salt: cred.salt, passwordHash: cred.passwordHash, status: 'active', mustChangePassword: true, createdAt: SEED_BASE_TIME }
 }
 
 export const SEED_USERS: User[] = [

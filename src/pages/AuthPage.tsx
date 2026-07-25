@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { GraduationCap, LogIn, ShieldCheck, UserRoundPlus } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
-import { generateSalt, hashPassword, setSession, validateRegister } from '@/lib/auth'
+import { createCredential, setSession, validateRegister, verifyPassword } from '@/lib/auth'
 import { USER_COLORS, type Role } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader } from '@/components/ui/card'
@@ -54,10 +54,19 @@ export default function AuthPage() {
     }
     setLoginBusy(true)
     try {
-      const hash = await hashPassword(loginPassword, user.salt)
-      if (hash !== user.passwordHash) {
+      const result = await verifyPassword(user, loginPassword)
+      if (!result.ok) {
         setLoginError('密码错误，请重试')
         return
+      }
+      // 旧格式凭据验证成功：静默升级为 PBKDF2 入库（用户无感知）
+      if (result.upgraded) {
+        dispatch({
+          type: 'upgradeCredential',
+          userId: user.id,
+          passwordHash: result.upgraded.passwordHash,
+          salt: result.upgraded.salt,
+        })
       }
       setSession(user.id)
       toast.success(`欢迎回来，${user.name}`)
@@ -76,8 +85,7 @@ export default function AuthPage() {
 
     setRegBusy(true)
     try {
-      const salt = generateSalt()
-      const passwordHash = await hashPassword(regPassword, salt)
+      const { salt, passwordHash } = await createCredential(regPassword)
       const phone = regPhone.trim()
       // 边界：系统内一个用户都没有时，首个注册用户自动成为 active 的管理员
       const isFirstUser = users.length === 0
@@ -165,7 +173,7 @@ export default function AuthPage() {
                   {loginBusy ? '正在登录…' : '登 录'}
                 </Button>
                 <div className="rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-700">
-                  演示账号：13800000001 / 123456（管理员）
+                  初始密码请联系管理员获取；首次登录后需修改密码
                 </div>
               </TabsContent>
 
@@ -194,7 +202,7 @@ export default function AuthPage() {
                     <Input
                       id="reg-password"
                       type="password"
-                      placeholder="至少 6 位"
+                      placeholder="至少 8 位，含字母和数字"
                       value={regPassword}
                       onChange={(e) => setRegPassword(e.target.value)}
                     />

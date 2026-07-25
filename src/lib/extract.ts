@@ -2,9 +2,10 @@ import * as pdfjs from 'pdfjs-dist'
 import mammoth from 'mammoth'
 import { getLlmConfig, isVisionReady, ocrWithVision } from '@/lib/llm'
 
-// Worker 作为同源静态文件随应用一起部署（public/pdf.worker.min.js）。
+// Worker 作为同源静态文件随应用一起部署（public/pdf.worker.min.mjs，随 pdfjs-dist 4.x 升级）。
 // Chrome 禁止从 data:/blob: URL 创建 ES module Worker，因此必须走同源文件。
-pdfjs.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js'
+// 升级 pdfjs-dist 后需同步执行：cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/
+pdfjs.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs'
 
 export type ResumeFileKind = 'pdf' | 'docx' | 'text'
 
@@ -18,6 +19,10 @@ export function detectKind(fileName: string): ResumeFileKind | null {
 
 /** 扫描件 OCR 最多处理的页数（简历页数有限，防止超大文件卡死） */
 const OCR_MAX_PAGES = 5
+/** 单文件大小上限：超过直接拒绝（内存与解析耗时护栏） */
+export const MAX_FILE_SIZE = 20 * 1024 * 1024
+/** Tesseract 单页 OCR 超时：超时按该页识别失败处理，不得永远「解析中」 */
+const OCR_PAGE_TIMEOUT_MS = 3 * 60 * 1000
 /** 单页有效字符达到该值视为文字页，直接使用文字层 */
 const TEXT_PAGE_MIN_CHARS = 80
 /** 整份 PDF 有效字符低于该值时判定为纯扫描件，全量 OCR */
@@ -136,38 +141,74 @@ async function renderPdfPages(
   return images
 }
 
+/** OCR 结果：页码 → 识别文本，外加超时/失败等提醒（并入解析结果的低置信度提示） */
+interface OcrOutcome {
+  result: Map<number, string>
+  warnings: string[]
+}
+
 /** 本地 OCR 兜底：Tesseract 中英文联合模型识别（离线可用，精度低于视觉模型） */
 async function ocrWithTesseract(
   doc: pdfjs.PDFDocumentProxy,
   pageNums: number[],
   onProgress?: (msg: string) => void,
-): Promise<Map<number, string>> {
+): Promise<OcrOutcome> {
   const { createWorker } = await import('tesseract.js')
   let lastReported = -1
-  const worker = await createWorker(['chi_sim', 'eng'], 1, {
-    logger: (m: { status: string; progress?: number }) => {
-      if (m.status === 'recognizing text' && typeof m.progress === 'number') {
-        const pct = Math.round(m.progress * 10)
-        if (pct !== lastReported) {
-          lastReported = pct
-          onProgress?.(`本地 OCR 识别中… ${Math.round(m.progress * 100)}%`)
+  const makeWorker = () =>
+    createWorker(['chi_sim', 'eng'], 1, {
+      logger: (m: { status: string; progress?: number }) => {
+        if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+          const pct = Math.round(m.progress * 10)
+          if (pct !== lastReported) {
+            lastReported = pct
+            onProgress?.(`本地 OCR 识别中… ${Math.round(m.progress * 100)}%`)
+          }
         }
-      }
-    },
-  })
+      },
+    })
+  let worker = await makeWorker()
+  const result = new Map<number, string>()
+  const warnings: string[] = []
   try {
-    const result = new Map<number, string>()
     for (const p of pageNums) {
       onProgress?.(`本地 OCR 识别第 ${p} 页（共 ${pageNums.length} 页，首次使用需下载中英文模型）…`)
       // scale 3 + 灰度/对比度增强 + PNG 无损，尽量保住细小文字
       const canvas = await renderPageCanvas(doc, p, 3)
       enhanceCanvasForOcr(canvas)
-      const { data } = await worker.recognize(canvas.toDataURL('image/png'))
+      // 单页 3 分钟超时护栏：超时按该页识别失败处理，后续页继续（worker 可能仍卡死，重建）
+      let timedOut = false
+      const { data } = await Promise.race([
+        worker.recognize(canvas.toDataURL('image/png')),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            timedOut = true
+            reject(new Error(`第 ${p} 页 OCR 超时`))
+          }, OCR_PAGE_TIMEOUT_MS)
+        }),
+      ]).catch(async (e: unknown) => {
+        if (!timedOut) throw e
+        warnings.push(`第 ${p} 页本地 OCR 识别超时（超过 3 分钟），该页内容未识别`)
+        return { data: { text: '' } }
+      })
       result.set(p, data.text)
+      if (timedOut) {
+        // 超时的 worker 内部任务可能仍在执行，直接废弃并为后续页重建
+        try {
+          await worker.terminate()
+        } catch {
+          // ignore
+        }
+        if (p !== pageNums[pageNums.length - 1]) worker = await makeWorker()
+      }
     }
-    return result
+    return { result, warnings }
   } finally {
-    await worker.terminate()
+    try {
+      await worker.terminate()
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -176,7 +217,7 @@ async function ocrPdf(
   doc: pdfjs.PDFDocumentProxy,
   pageNums: number[],
   onProgress?: (msg: string) => void,
-): Promise<Map<number, string>> {
+): Promise<OcrOutcome> {
   const config = getLlmConfig()
   if (isVisionReady(config)) {
     try {
@@ -188,7 +229,7 @@ async function ocrPdf(
         const text = await ocrWithVision(images, config)
         result.set(p, text)
       }
-      if ([...result.values()].some((t) => t.trim())) return result
+      if ([...result.values()].some((t) => t.trim())) return { result, warnings: [] }
     } catch (e) {
       console.warn('视觉模型识别失败，回退本地 OCR：', e)
       onProgress?.('视觉模型不可用，切换本地 OCR…')
@@ -197,10 +238,17 @@ async function ocrPdf(
   return ocrWithTesseract(doc, pageNums, onProgress)
 }
 
-async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => void): Promise<string> {
+/** 文本提取结果：正文 + 提醒（OCR 截断/超时等，并入低置信度提示） */
+export interface ExtractResult {
+  text: string
+  warnings: string[]
+}
+
+async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => void): Promise<ExtractResult> {
   let doc: pdfjs.PDFDocumentProxy
   try {
-    doc = await pdfjs.getDocument({ data: buffer }).promise
+    // pdfjs-dist 4.x 要求 TypedArray 入参（ArrayBuffer 已废弃）
+    doc = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise
   } catch (e) {
     const msg = e instanceof Error ? e.message : ''
     if (/password/i.test(msg)) throw new Error('PDF 已加密，请先解除密码保护后重新上传')
@@ -222,14 +270,20 @@ async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => voi
   }
   // OCR 最多处理前 OCR_MAX_PAGES 页，超出页保留其（稀疏的）文字层
   const ocrPages = scanPages.filter((p) => p <= OCR_MAX_PAGES)
-  if (ocrPages.length === 0) return pageTexts.join('\n')
+  const warnings: string[] = []
+  // 发生了截断（存在未 OCR 的扫描页）时提醒：后续页内容未识别
+  if (doc.numPages > OCR_MAX_PAGES && scanPages.length > ocrPages.length) {
+    warnings.push(`共 ${doc.numPages} 页，仅识别前 ${OCR_MAX_PAGES} 页，后续内容未识别`)
+  }
+  if (ocrPages.length === 0) return { text: pageTexts.join('\n'), warnings }
 
   onProgress?.(
     `检测到 ${scanPages.length} 页为图片/扫描页，正在启用 OCR 识别（扫描件仅识别前 ${OCR_MAX_PAGES} 页）…`,
   )
-  const ocrMap = await ocrPdf(doc, ocrPages, onProgress)
+  const ocr = await ocrPdf(doc, ocrPages, onProgress)
+  warnings.push(...ocr.warnings)
   // 按页序合并：文字页用文字层，扫描页用 OCR 文本
-  return pageTexts.map((t, idx) => ocrMap.get(idx + 1) ?? t).join('\n')
+  return { text: pageTexts.map((t, idx) => ocr.result.get(idx + 1) ?? t).join('\n'), warnings }
 }
 
 async function extractDocx(buffer: ArrayBuffer, fileName: string): Promise<string> {
@@ -241,12 +295,13 @@ async function extractDocx(buffer: ArrayBuffer, fileName: string): Promise<strin
   return result.value
 }
 
-/** 从文件中提取纯文本（PDF / DOCX / 纯文本；扫描页 PDF 自动走 OCR） */
-export async function extractText(file: File, onProgress?: (msg: string) => void): Promise<string> {
+/** 从文件中提取纯文本（PDF / DOCX / 纯文本；扫描页 PDF 自动走 OCR）；单文件 >20MB 直接拒绝 */
+export async function extractText(file: File, onProgress?: (msg: string) => void): Promise<ExtractResult> {
   const kind = detectKind(file.name)
   if (!kind) throw new Error(`不支持的文件格式：${file.name}`)
-  if (kind === 'text') return file.text()
+  if (file.size > MAX_FILE_SIZE) throw new Error('文件过大（>20MB），请先压缩后重新上传')
+  if (kind === 'text') return { text: await file.text(), warnings: [] }
   const buffer = await file.arrayBuffer()
   if (kind === 'pdf') return extractPdf(buffer, onProgress)
-  return extractDocx(buffer, file.name)
+  return { text: await extractDocx(buffer, file.name), warnings: [] }
 }

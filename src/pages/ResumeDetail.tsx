@@ -192,8 +192,15 @@ export default function ResumeDetail({
     }
   }
 
-  const doMatchJob = (jobId: string) => {
-    dispatch({ type: 'matchJob', resumeId: resume.id, jobId, actorId: currentUser.id })
+  const doMatchJob = (jobId: string, force = false) => {
+    // 与 store 的 matchJob 兜底校验保持一致：学段硬性不符仅管理员可显式强制（双保险）
+    const job = jobs.find((j) => j.id === jobId)
+    if (job && checkCertFit(resume, job).level === 'block' && !force) {
+      toast.error('教资学段不满足岗位要求，无法锁定')
+      setCertCheck(null)
+      return
+    }
+    dispatch({ type: 'matchJob', resumeId: resume.id, jobId, actorId: currentUser.id, force })
     toast.success('已匹配并锁定该岗位')
     setMatchJobId('')
     setCertCheck(null)
@@ -980,7 +987,7 @@ export default function ResumeDetail({
             {certCheck?.level === 'block' && currentUser.role === 'admin' && (
               <AlertDialogAction
                 className="bg-rose-600 hover:bg-rose-700"
-                onClick={() => certCheck && doMatchJob(certCheck.jobId)}
+                onClick={() => certCheck && doMatchJob(certCheck.jobId, true)}
               >
                 强制锁定（管理员）
               </AlertDialogAction>

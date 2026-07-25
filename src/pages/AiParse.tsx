@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore, filterDuplicateResumes } from '@/lib/store'
-import { detectKind, extractText } from '@/lib/extract'
+import { detectKind, extractText, MAX_FILE_SIZE } from '@/lib/extract'
 import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
 import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
@@ -39,6 +39,9 @@ interface FileItem {
 
 const EDUCATION_OPTIONS = ['博士', '硕士', '本科', '大专', '高中', '未知']
 
+/** 低置信度列表中代表「字段键」的项（其余为中文提醒文案） */
+const LOW_CONFIDENCE_FIELD_KEYS = ['name', 'position', 'phone', 'email', 'education', 'certStage']
+
 function uid() {
   return `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -62,7 +65,7 @@ export default function AiParse() {
   const doneItems = items.filter((i) => i.status === 'done')
   const importable = doneItems.filter((i) => i.fields.name.trim())
 
-  async function processOne(itemId: string, fileName: string, rawText: string) {
+  async function processOne(itemId: string, fileName: string, rawText: string, extraWarnings: string[] = []) {
     const local = parseResumeText(rawText, fileName)
     let fields = local
     let method: 'ai' | 'local' = 'local'
@@ -76,6 +79,10 @@ export default function AiParse() {
         console.warn('LLM 解析失败，回退本地引擎：', e)
       }
     }
+    // 提取阶段的提醒（OCR 截断/超时等）并入低置信度提示
+    if (extraWarnings.length > 0) {
+      fields = { ...fields, lowConfidence: [...fields.lowConfidence, ...extraWarnings.filter((w) => !fields.lowConfidence.includes(w))] }
+    }
     setItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, status: 'done', fields, method } : i)))
   }
 
@@ -88,6 +95,11 @@ export default function AiParse() {
         toast.error(`不支持的格式：${file.name}（支持 PDF / DOCX / TXT / MD）`)
         continue
       }
+      // 大小护栏：单文件 >20MB 直接拒绝
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`${file.name} 文件过大（>20MB），请先压缩`)
+        continue
+      }
       const item: FileItem = { id: uid(), fileName: file.name, status: 'processing', rawText: '', fields: emptyFields(), file }
       pairs.push({ item, file })
     }
@@ -97,10 +109,10 @@ export default function AiParse() {
       const setProgress = (msg: string) =>
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: msg } : i)))
       try {
-        const text = await extractText(file, setProgress)
+        const { text, warnings } = await extractText(file, setProgress)
         if (!text.trim()) throw new Error('OCR 也无法识别出文字，请上传更清晰的扫描件或文字版简历')
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, rawText: text, progress: '解析字段中…' } : i)))
-        await processOne(item.id, item.fileName, text)
+        await processOne(item.id, item.fileName, text, warnings)
       } catch (e) {
         setItems((prev) =>
           prev.map((i) => (i.id === item.id ? { ...i, status: 'error', error: e instanceof Error ? e.message : '解析失败' } : i)),
@@ -139,7 +151,7 @@ export default function AiParse() {
     )
   }
 
-  function doImport() {
+  async function doImport() {
     if (importable.length === 0) {
       toast.error('没有可导入的简历（姓名不能为空）')
       return
@@ -164,6 +176,7 @@ export default function AiParse() {
       age: i.fields.age,
       certStage: i.fields.certStage,
       certSubject: i.fields.certSubject,
+      certQualified: i.fields.certQualified,
       gradYear: i.fields.gradYear,
       hometown: i.fields.hometown,
       fullTime: i.fields.fullTime,
@@ -182,12 +195,19 @@ export default function AiParse() {
       return
     }
     dispatch({ type: 'importResumes', actorId: currentUser.id, resumes: unique })
-    // 原件存本机 IndexedDB（隐私模式等不可用时静默失败，不影响导入）
+    // 原件存本机 IndexedDB（失败不阻断导入，但明确提示原件未保存）
+    let fileSaveFail = 0
     for (const c of unique) {
       const f = fileByResumeId.get(c.id)
-      if (f) void saveResumeFile(c.id, f)
+      if (f) {
+        const ok = await saveResumeFile(c.id, f)
+        if (!ok) fileSaveFail++
+      }
     }
     toast.success(`成功导入 ${unique.length} 份简历${skipped > 0 ? `，跳过 ${skipped} 份重复` : ''}`)
+    if (fileSaveFail > 0) {
+      toast.warning(`${fileSaveFail} 份原件未能保存到本机存储（解析数据已正常入库，可在详情页重新上传原件）`)
+    }
     navigate('/resumes')
   }
 
@@ -444,10 +464,22 @@ export default function AiParse() {
               {item.status === 'done' && (
                 <CardContent className="space-y-3">
                   {item.fields.lowConfidence.length > 0 && (
-                    <p className="flex items-center gap-1.5 text-xs text-amber-600">
-                      <AlertTriangle className="h-3.5 w-3.5" />
-                      高亮字段识别置信度较低，请人工确认后再导入。
-                    </p>
+                    <div className="space-y-1">
+                      {item.fields.lowConfidence.some((f) => LOW_CONFIDENCE_FIELD_KEYS.includes(f)) && (
+                        <p className="flex items-center gap-1.5 text-xs text-amber-600">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          高亮字段识别置信度较低，请人工确认后再导入。
+                        </p>
+                      )}
+                      {/* 中文提醒类（身份证校验失败 / OCR 截断 / 多教师资格证 / 合格证明等）逐条展示 */}
+                      {item.fields.lowConfidence
+                        .filter((f) => !LOW_CONFIDENCE_FIELD_KEYS.includes(f))
+                        .map((msg, i) => (
+                          <p key={i} className="flex items-center gap-1.5 text-xs text-amber-600">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />{msg}
+                          </p>
+                        ))}
+                    </div>
                   )}
                   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                     <FieldInput label="姓名" warn={item.fields.lowConfidence.includes('name')} value={item.fields.name} onChange={(v) => updateField(item.id, { name: v })} />
@@ -528,7 +560,7 @@ function emptyFields(): ParsedFields {
   return {
     name: '', phone: '', email: '', position: '', education: '未知', experience: 0,
     skills: [], university: '', company: '', certificates: [], tags: [],
-    age: 0, certStage: '', certSubject: '', gradYear: 0, hometown: '', fullTime: '未知', major: '',
+    age: 0, certStage: '', certSubject: '', certQualified: false, gradYear: 0, hometown: '', fullTime: '未知', major: '',
     idCard: '', gender: '',
     lowConfidence: [],
   }

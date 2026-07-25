@@ -1,9 +1,14 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
 import type { Activity, Interview, Job, Resume, Role, Stage, User, UserStatus } from '@/types'
 import { STAGE_LABELS, RESULT_LABELS } from '@/types'
 import { SEED_USERS, seedResumes, seedInterviews, seedJobs } from '@/lib/seed'
 import { normalizeResume, normalizeUser } from '@/lib/tags'
-import { getClientId, getSyncUrl, pullRemote, pushRemote, setSyncUrl, type SharedState } from '@/lib/sync'
+import { checkCertFit } from '@/lib/match'
+import { validateSharedState } from '@/lib/remote-schema'
+import {
+  getClientId, getSyncUrl, pullRemote, pushRemote, setSyncPassphrase, setSyncUrl, type SharedState,
+} from '@/lib/sync'
 
 interface State {
   users: User[]
@@ -25,6 +30,7 @@ type Action =
   | { type: 'setUserStatus'; userId: string; status: UserStatus }
   | { type: 'resetPassword'; userId: string; passwordHash: string; salt: string }
   | { type: 'changePassword'; userId: string; passwordHash: string; salt: string }
+  | { type: 'upgradeCredential'; userId: string; passwordHash: string; salt: string }
   | { type: 'setUserRole'; userId: string; role: Role }
   | { type: 'switchUser'; userId: string }
   | { type: 'addInterview'; interview: Omit<Interview, 'id' | 'createdAt'>; actorId: string }
@@ -33,7 +39,7 @@ type Action =
   | { type: 'addJob'; job: Omit<Job, 'id' | 'createdAt'>; actorId: string }
   | { type: 'updateJob'; id: string; patch: Partial<Pick<Job, 'region' | 'school' | 'level' | 'subject' | 'dormitory' | 'headcount' | 'status' | 'note'>>; actorId: string }
   | { type: 'deleteJob'; id: string }
-  | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string }
+  | { type: 'matchJob'; resumeId: string; jobId: string; actorId: string; /** 管理员在确认弹窗中显式强制锁定（绕过学段 block 兜底校验） */ force?: boolean }
   | { type: 'updateResumeFields'; id: string; fields: Partial<Resume>; actorId: string }
   | { type: 'releaseResumes'; ids: string[]; reason: string; toStage: Stage; actorId: string }
   | { type: 'applyRemote'; users: User[]; resumes: Resume[]; interviews: Interview[]; jobs?: Job[] }
@@ -74,6 +80,16 @@ const DIRTY_KEY = 'hireflow-sync-dirty'
 const REMOTE_TS_KEY = 'hireflow-sync-remote-ts'
 /** 简历字符串字段入库长度上限（防御：图片 dataURL 等超长内容不写入 localStorage，避免配额溢出） */
 const MAX_RESUME_FIELD_LEN = 50000
+/** localStorage 配额溢出告警只提示一次，避免刷屏 */
+let quotaToastShown = false
+
+/** 判断是否为 localStorage 配额溢出异常（跨浏览器：QuotaExceededError / 历史 code 22 / Firefox NS_ERROR 变种） */
+function isQuotaExceeded(e: unknown): boolean {
+  return (
+    e instanceof DOMException &&
+    (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014)
+  )
+}
 
 /** 持久化前防御：任何简历字符串字段超过上限时截断（图片 base64 等不应入库的内容一并兜底） */
 function sanitizeResumesForPersist(resumes: Resume[]): Resume[] {
@@ -340,6 +356,15 @@ function reducer(state: State, action: Action): State {
     case 'matchJob': {
       const job = state.jobs.find((j) => j.id === action.jobId)
       if (!job || job.status !== 'open') return state
+      const target = state.resumes.find((r) => r.id === action.resumeId)
+      if (!target) return state
+      // 兜底校验①：简历已被其他职位锁定时拒绝（同一职位重复锁定幂等放行）
+      if (target.jobId && target.jobId !== action.jobId) return state
+      // 兜底校验②：学段硬性不符（如小学教师资格证锁高中岗位）一律拒绝，
+      // 与详情页共用的 checkCertFit 判定保持一致；
+      // 唯一例外：管理员在确认弹窗中显式选择「强制锁定」（force=true，活动记录留痕）
+      if (checkCertFit(target, job).level === 'block' && !action.force) return state
+      const forced = action.force && checkCertFit(target, job).level === 'block'
       return {
         ...state,
         resumes: state.resumes.map((r) =>
@@ -351,7 +376,10 @@ function reducer(state: State, action: Action): State {
                 lockedBy: action.actorId,
                 lockedAt: now,
                 updatedAt: now,
-                activities: [...r.activities, activity(action.actorId, `匹配并锁定到「${jobLabel(job)}」`)],
+                activities: [
+                  ...r.activities,
+                  activity(action.actorId, `${forced ? '（管理员强制）' : ''}匹配并锁定到「${jobLabel(job)}」`),
+                ],
               }
             : r,
         ),
@@ -404,7 +432,8 @@ function reducer(state: State, action: Action): State {
         ...state,
         users: state.users.map((u) =>
           u.id === action.userId && u.status === 'pending'
-            ? { ...u, status: 'active' as UserStatus, ...(action.role ? { role: action.role } : {}) }
+            ? // 获批的新用户首次登录强制修改密码
+              { ...u, status: 'active' as UserStatus, mustChangePassword: true, ...(action.role ? { role: action.role } : {}) }
             : u,
         ),
       }
@@ -419,8 +448,26 @@ function reducer(state: State, action: Action): State {
         users: state.users.map((u) => (u.id === action.userId ? { ...u, status: action.status } : u)),
       }
     }
-    case 'resetPassword':
+    case 'resetPassword': {
+      // 管理员重置密码后，该用户下次登录强制修改密码
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.userId ? { ...u, passwordHash: action.passwordHash, salt: action.salt, mustChangePassword: true } : u,
+        ),
+      }
+    }
     case 'changePassword': {
+      // 用户主动改密（含强制改密页）成功后解除强制改密标记
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.userId ? { ...u, passwordHash: action.passwordHash, salt: action.salt, mustChangePassword: false } : u,
+        ),
+      }
+    }
+    case 'upgradeCredential': {
+      // 旧格式凭据登录成功后的静默 PBKDF2 升级：仅更新凭据，不触碰 mustChangePassword
       return {
         ...state,
         users: state.users.map((u) =>
@@ -469,8 +516,14 @@ interface StoreValue extends State {
   dispatch: React.Dispatch<Action>
   syncStatus: SyncStatus
   lastSyncAt: number | null
+  /** 云端数据已加密但本机无口令或口令不匹配（需要输入团队同步口令） */
+  syncLocked: boolean
   /** 手动触发一次同步，返回本次是否成功 */
   syncNow: () => Promise<boolean>
+  /** 保存团队同步口令并重试拉取（口令错误会重新进入 syncLocked） */
+  submitSyncPassphrase: (passphrase: string) => Promise<void>
+  /** 强制把本地数据重新加密推送一次（设置/更换同步口令后调用） */
+  forcePush: () => Promise<void>
   syncUrl: string
   setCustomSyncUrl: (url: string) => void
 }
@@ -495,6 +548,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   )
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
+  const [syncLocked, setSyncLocked] = useState(false)
   const [syncUrl, setSyncUrlState] = useState(getSyncUrl)
   const clientIdRef = useRef(getClientId())
   // 恢复上次的同步游标：本地若有未推送的修改，刷新后先推送而不是被云端覆盖
@@ -524,6 +578,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  // doPush 冲突分支需要回调 pullAndApply（两者互相依赖，用 ref 打破循环）
+  const pullAndApplyRef = useRef<() => Promise<void>>(async () => {})
+
   const doPush = useMemo(
     () => async () => {
       if (pushingRef.current) return
@@ -531,14 +588,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSyncStatus('syncing')
       const { users, resumes, interviews, jobs } = stateRef.current
       const shared: SharedState = { users, resumes, interviews, jobs }
-      const updatedAt = await pushRemote(shared, clientIdRef.current)
+      const result = await pushRemote(shared, clientIdRef.current, lastRemoteRef.current)
       pushingRef.current = false
-      if (updatedAt !== null) {
-        lastRemoteRef.current = updatedAt
+      if (result.status === 'pushed') {
+        lastRemoteRef.current = result.updatedAt
         dirtyRef.current = false
-        persistSyncMarks(false, updatedAt)
+        persistSyncMarks(false, result.updatedAt)
         setSyncStatus('ok')
         setLastSyncAt(Date.now())
+      } else if (result.status === 'conflict') {
+        // 远端有其他人更新的数据：放弃本次推送（整库覆盖会丢对方数据），
+        // 拉取远端最新；本端基于旧版本的未推送修改随之失效（last-write-wins 的既定取舍）
+        dirtyRef.current = false
+        persistSyncMarks(false)
+        toast.warning('检测到云端有更新的数据，已为你拉取最新版本')
+        await pullAndApplyRef.current()
       } else {
         setSyncStatus('error')
       }
@@ -546,18 +610,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setSyncStatus],
   )
 
-  const doPull = useMemo(
+  const pullAndApply = useMemo(
     () => async () => {
-      // 本地有未推送的修改时先推送，避免被云端旧数据覆盖
-      if (dirtyRef.current) {
-        await doPush()
-        return
-      }
-      const payload = await pullRemote()
-      if (payload === undefined) {
+      const result = await pullRemote()
+      if (result.status === 'error') {
         setSyncStatus('error')
         return
       }
+      if (result.status === 'locked') {
+        // 云端数据已加密，但本机未设置口令或口令不匹配：不应用数据，等待用户在 UI 输入口令
+        setSyncLocked(true)
+        setSyncStatus((s) => (s === 'syncing' ? s : 'ok'))
+        return
+      }
+      const { payload } = result
       if (payload.state === null) {
         // 云端是空库：把本地数据推上去
         dirtyRef.current = true
@@ -566,12 +632,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return
       }
       if (payload.updatedAt > lastRemoteRef.current) {
-        lastRemoteRef.current = payload.updatedAt
         if (payload.origin !== clientIdRef.current && payload.state) {
+          // 竞态防护：拉取窗口内产生的本地修改不得被整库覆盖，改走推送分支
+          if (dirtyRef.current) {
+            await doPush()
+            return
+          }
+          // zod 结构校验：畸形数据拒绝应用、保留本地数据，绝不写入 localStorage（防砖化）
+          const validation = validateSharedState(payload.state)
+          if (!validation.ok) {
+            console.error('远端数据校验失败，已拒绝应用：', validation.issues)
+            toast.error('云端数据格式异常，已保护本地数据不被覆盖')
+            setSyncStatus('error')
+            return
+          }
+          lastRemoteRef.current = payload.updatedAt
           dirtyRef.current = false // 应用云端数据，避免回推造成回环
           persistSyncMarks(false, payload.updatedAt)
-          baseDispatch({ type: 'applyRemote', ...payload.state })
+          setSyncLocked(false)
+          baseDispatch({ type: 'applyRemote', ...validation.state })
         } else {
+          lastRemoteRef.current = payload.updatedAt
           persistSyncMarks(false, payload.updatedAt)
         }
         setLastSyncAt(Date.now())
@@ -580,18 +661,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [doPush, setSyncStatus],
   )
+  // 通过 effect 同步 ref，避免渲染期写 ref（react-hooks 规则）
+  useEffect(() => {
+    pullAndApplyRef.current = pullAndApply
+  }, [pullAndApply])
 
-    // 本地变更后 1 秒防抖推送
+  const doPull = useMemo(
+    () => async () => {
+      // 本地有未推送的修改时先推送，避免被云端旧数据覆盖
+      if (dirtyRef.current) {
+        await doPush()
+        return
+      }
+      await pullAndApply()
+    },
+    [doPush, pullAndApply],
+  )
+
+  // 本地变更后 5 秒防抖推送（放宽防抖窗口，降低对公共存储端的请求放大）
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, resumes: sanitizeResumesForPersist(state.resumes) }))
-    } catch {
-      // 存储配额满等异常不阻断使用（云端同步仍可进行）
+    } catch (e) {
+      // 存储配额满：告警一次（不刷屏），不阻断使用（云端同步仍可进行）
+      if (isQuotaExceeded(e) && !quotaToastShown) {
+        quotaToastShown = true
+        toast.error('本地存储空间不足，部分数据可能无法保存到本机缓存（云端同步不受影响）')
+      }
     }
     if (!dirtyRef.current) return
     const t = setTimeout(() => {
       if (dirtyRef.current) doPush()
-    }, 1000)
+    }, 5000)
     return () => clearTimeout(t)
   }, [state, doPush])
 
@@ -620,6 +721,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [doPush, doPull],
   )
 
+  const submitSyncPassphrase = useMemo(
+    () => async (passphrase: string): Promise<void> => {
+      // 口令仅存本机（绝不上云），保存后立即重试拉取；口令错误会重新进入 syncLocked
+      setSyncPassphrase(passphrase)
+      setSyncLocked(false)
+      await pullAndApply()
+    },
+    [pullAndApply],
+  )
+
+  const forcePush = useMemo(
+    () => async (): Promise<void> => {
+      dirtyRef.current = true
+      persistSyncMarks(true)
+      await doPush()
+    },
+    [doPush],
+  )
+
   const setCustomSyncUrl = useMemo(
     () => (url: string) => {
       setSyncUrl(url)
@@ -632,8 +752,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<StoreValue>(() => {
     const currentUser = state.users.find((u) => u.id === state.currentUserId) ?? state.users[0]
-    return { ...state, currentUser, dispatch, syncStatus, lastSyncAt, syncNow, syncUrl, setCustomSyncUrl }
-  }, [state, dispatch, syncStatus, lastSyncAt, syncNow, syncUrl, setCustomSyncUrl])
+    return {
+      ...state,
+      currentUser,
+      dispatch,
+      syncStatus,
+      lastSyncAt,
+      syncLocked,
+      syncNow,
+      submitSyncPassphrase,
+      forcePush,
+      syncUrl,
+      setCustomSyncUrl,
+    }
+  }, [state, dispatch, syncStatus, lastSyncAt, syncLocked, syncNow, submitSyncPassphrase, forcePush, syncUrl, setCustomSyncUrl])
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }

@@ -89,8 +89,17 @@ export default function Resumes() {
   }
 
   const batchStage = (stage: Stage) => {
+    // 移入「面试不通过」时，锁定中的简历（matched/interview/offered 且有锁定人）会被 reducer 同步释放回总库
+    const lockedCount =
+      stage === 'rejected'
+        ? resumes.filter(
+            (r) => selectedIds.includes(r.id) && r.lockedBy && (r.stage === 'matched' || r.stage === 'interview' || r.stage === 'offered'),
+          ).length
+        : 0
     dispatch({ type: 'updateStage', ids: selectedIds, stage, actorId: currentUser.id })
-    toast.success(`已将 ${selectedIds.length} 份简历移至「${STAGE_LABELS[stage]}」`)
+    toast.success(
+      `已将 ${selectedIds.length} 份简历移至「${STAGE_LABELS[stage]}」${lockedCount > 0 ? `，其中 ${lockedCount} 份已锁定简历已同步释放锁定` : ''}`,
+    )
     setSelected(new Set())
   }
 

@@ -15,9 +15,23 @@ export interface RegionInfo {
   label: string
 }
 
-/** 身份证号是否具备基本格式（18 位，末位可为 X） */
+/** GB11643 加权因子（前 17 位） */
+const ID_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+/** 加权和模 11 的余数 → 校验码字符 */
+const ID_CHECK_CODES = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
+
+/** GB11643 校验码验证：前 17 位加权和模 11 后按映射表比对末位 */
+export function isValidIdCardChecksum(idCard: string): boolean {
+  const id = idCard.trim().toUpperCase()
+  if (!/^\d{17}[\dX]$/.test(id)) return false
+  let sum = 0
+  for (let i = 0; i < 17; i++) sum += Number(id[i]) * ID_WEIGHTS[i]
+  return ID_CHECK_CODES[sum % 11] === id[17]
+}
+
+/** 身份证号是否有效（18 位格式 + GB11643 校验码；OCR 错一位即判无效，防止性别/年龄/户籍连带全错） */
 export function isValidIdCard(idCard: string): boolean {
-  return /^\d{17}[\dXx]$/.test(idCard.trim())
+  return isValidIdCardChecksum(idCard)
 }
 
 /** 根据身份证号前 6 位地址码解析户籍地；查不到县时退回省市 */

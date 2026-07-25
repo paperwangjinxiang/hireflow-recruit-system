@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { UserPlus, RotateCcw, ShieldCheck, UserCheck, UserX } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
-import { generateSalt, hashPassword } from '@/lib/auth'
+import { createCredential } from '@/lib/auth'
 import { ROLE_LABELS, USER_COLORS, USER_STATUS_LABELS, type Role, type User } from '@/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -69,9 +69,8 @@ export default function Team() {
     }
     setBusy(true)
     try {
-      // 管理员直接添加的成员：默认启用，初始密码 123456
-      const salt = generateSalt()
-      const passwordHash = await hashPassword(DEFAULT_PASSWORD, salt)
+      // 管理员直接添加的成员：默认启用，初始密码 123456，首次登录强制改密
+      const { salt, passwordHash } = await createCredential(DEFAULT_PASSWORD)
       dispatch({
         type: 'register',
         user: {
@@ -83,9 +82,10 @@ export default function Team() {
           passwordHash,
           salt,
           status: 'active',
+          mustChangePassword: true,
         },
       })
-      toast.success(`已添加成员 ${name.trim()}，初始密码 ${DEFAULT_PASSWORD}`)
+      toast.success(`已添加成员 ${name.trim()}，初始密码 ${DEFAULT_PASSWORD}，其首次登录需修改密码`)
       setName('')
       setPhone('')
       setEmail('')
@@ -118,10 +118,9 @@ export default function Team() {
   }
 
   const resetPassword = async (u: User) => {
-    const salt = generateSalt()
-    const passwordHash = await hashPassword(DEFAULT_PASSWORD, salt)
+    const { salt, passwordHash } = await createCredential(DEFAULT_PASSWORD)
     dispatch({ type: 'resetPassword', userId: u.id, passwordHash, salt })
-    toast.success(`已将 ${u.name} 的密码重置为 ${DEFAULT_PASSWORD}`)
+    toast.success(`已将 ${u.name} 的密码重置为 ${DEFAULT_PASSWORD}，其下次登录需修改密码`)
   }
 
   const changeRole = (u: User, r: Role) => {

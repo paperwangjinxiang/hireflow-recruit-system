@@ -5,6 +5,7 @@ import { StoreProvider, useStore } from '@/lib/store'
 import { clearSession, useSessionUserId } from '@/lib/auth'
 import Layout from '@/components/Layout'
 import AuthPage from '@/pages/AuthPage'
+import ForceChangePassword from '@/components/ForceChangePassword'
 import Dashboard from '@/pages/Dashboard'
 import Resumes from '@/pages/Resumes'
 import Jobs from '@/pages/Jobs'
@@ -47,6 +48,11 @@ function AuthGate() {
 
   if (!sessionUser || sessionUser.status !== 'active') {
     return <AuthPage />
+  }
+
+  // 强制改密：种子用户/获批新用户/被重置密码的用户，改完密码才放行
+  if (sessionUser.mustChangePassword) {
+    return <ForceChangePassword />
   }
 
   return (

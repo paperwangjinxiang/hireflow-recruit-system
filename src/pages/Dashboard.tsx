@@ -263,7 +263,8 @@ export default function Dashboard() {
               )
             })}
             <div className="flex flex-wrap gap-2 border-t pt-3">
-              {TERMINAL_STAGES.map((stage) => (
+              {/* 已入职已在漏斗末段展示，终态徽章行不重复显示 */}
+              {TERMINAL_STAGES.filter((s) => s !== 'onboarded').map((stage) => (
                 <Badge key={stage} variant="outline" className={STAGE_COLORS[stage]}>
                   {STAGE_LABELS[stage]} {stats.byStage[stage]}
                 </Badge>

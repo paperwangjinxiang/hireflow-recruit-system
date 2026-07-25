@@ -10,11 +10,13 @@ export interface User {
   color: string
   /** 登录账号（唯一） */
   phone: string
-  /** SHA-256(`${salt}:${password}`) 的 hex 输出 */
+  /** 密码凭据：新格式为 `pbkdf2:<iterations>:<saltHex>:<hashHex>`；旧格式为单轮 SHA-256 hex（登录成功后会自动升级） */
   passwordHash: string
-  /** 每用户随机盐（16 位 hex） */
+  /** 每用户随机盐（hex；新格式下与 passwordHash 信封中的盐一致，冗余保留用于兼容） */
   salt: string
   status: UserStatus
+  /** 为 true 时登录后强制修改密码（种子用户/获批新用户/被重置密码的用户） */
+  mustChangePassword?: boolean
   createdAt: number
 }
 
@@ -42,8 +44,8 @@ export type Stage =
 /** 主漏斗阶段（用于漏斗图，终态单独统计） */
 export const FUNNEL_STAGES: Stage[] = ['imported', 'screening', 'matched', 'interview', 'offered', 'onboarded']
 
-/** 终态阶段 */
-export const TERMINAL_STAGES: Stage[] = ['rejected', 'offboarded', 'blacklisted']
+/** 终态阶段（已入职/离职/黑名单/面试不通过均不再计入「进行中」，与 reminders.ts 口径一致） */
+export const TERMINAL_STAGES: Stage[] = ['rejected', 'onboarded', 'offboarded', 'blacklisted']
 
 export interface Note {
   id: string
