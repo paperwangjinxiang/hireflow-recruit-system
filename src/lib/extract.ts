@@ -254,36 +254,45 @@ async function extractPdf(buffer: ArrayBuffer, onProgress?: (msg: string) => voi
     if (/password/i.test(msg)) throw new Error('PDF 已加密，请先解除密码保护后重新上传')
     throw new Error('PDF 文件损坏或格式异常，无法读取')
   }
-  const pageTexts = await extractPdfTextLayer(doc)
-  const stats = pageTexts.map(analyzePageText)
-  const totalValid = stats.reduce((s, x) => s + x.valid, 0)
+  try {
+    const pageTexts = await extractPdfTextLayer(doc)
+    const stats = pageTexts.map(analyzePageText)
+    const totalValid = stats.reduce((s, x) => s + x.valid, 0)
 
-  // 逐页判定：整份有效字符 < 30 → 纯扫描件全量 OCR；
-  // 否则单页有效字符 < 80 或乱码比例过高 → 该页走 OCR，其余页用文字层
-  const scanPages: number[] = []
-  if (totalValid < DOC_SCAN_MAX_CHARS) {
-    for (let i = 1; i <= doc.numPages; i++) scanPages.push(i)
-  } else {
-    stats.forEach((s, idx) => {
-      if (s.valid < TEXT_PAGE_MIN_CHARS || s.junkRatio > JUNK_RATIO_MAX) scanPages.push(idx + 1)
-    })
-  }
-  // OCR 最多处理前 OCR_MAX_PAGES 页，超出页保留其（稀疏的）文字层
-  const ocrPages = scanPages.filter((p) => p <= OCR_MAX_PAGES)
-  const warnings: string[] = []
-  // 发生了截断（存在未 OCR 的扫描页）时提醒：后续页内容未识别
-  if (doc.numPages > OCR_MAX_PAGES && scanPages.length > ocrPages.length) {
-    warnings.push(`共 ${doc.numPages} 页，仅识别前 ${OCR_MAX_PAGES} 页，后续内容未识别`)
-  }
-  if (ocrPages.length === 0) return { text: pageTexts.join('\n'), warnings }
+    // 逐页判定：整份有效字符 < 30 → 纯扫描件全量 OCR；
+    // 否则单页有效字符 < 80 或乱码比例过高 → 该页走 OCR，其余页用文字层
+    const scanPages: number[] = []
+    if (totalValid < DOC_SCAN_MAX_CHARS) {
+      for (let i = 1; i <= doc.numPages; i++) scanPages.push(i)
+    } else {
+      stats.forEach((s, idx) => {
+        if (s.valid < TEXT_PAGE_MIN_CHARS || s.junkRatio > JUNK_RATIO_MAX) scanPages.push(idx + 1)
+      })
+    }
+    // OCR 最多处理前 OCR_MAX_PAGES 页，超出页保留其（稀疏的）文字层
+    const ocrPages = scanPages.filter((p) => p <= OCR_MAX_PAGES)
+    const warnings: string[] = []
+    // 发生了截断（存在未 OCR 的扫描页）时提醒：后续页内容未识别
+    if (doc.numPages > OCR_MAX_PAGES && scanPages.length > ocrPages.length) {
+      warnings.push(`共 ${doc.numPages} 页，仅识别前 ${OCR_MAX_PAGES} 页，后续内容未识别`)
+    }
+    if (ocrPages.length === 0) return { text: pageTexts.join('\n'), warnings }
 
-  onProgress?.(
-    `检测到 ${scanPages.length} 页为图片/扫描页，正在启用 OCR 识别（扫描件仅识别前 ${OCR_MAX_PAGES} 页）…`,
-  )
-  const ocr = await ocrPdf(doc, ocrPages, onProgress)
-  warnings.push(...ocr.warnings)
-  // 按页序合并：文字页用文字层，扫描页用 OCR 文本
-  return { text: pageTexts.map((t, idx) => ocr.result.get(idx + 1) ?? t).join('\n'), warnings }
+    onProgress?.(
+      `检测到 ${scanPages.length} 页为图片/扫描页，正在启用 OCR 识别（扫描件仅识别前 ${OCR_MAX_PAGES} 页）…`,
+    )
+    const ocr = await ocrPdf(doc, ocrPages, onProgress)
+    warnings.push(...ocr.warnings)
+    // 按页序合并：文字页用文字层，扫描页用 OCR 文本
+    return { text: pageTexts.map((t, idx) => ocr.result.get(idx + 1) ?? t).join('\n'), warnings }
+  } finally {
+    // 释放 PDF 文档句柄与缓存，避免每解析一份 PDF 驻留一份内存（destroy 是异步的，失败静默忽略）
+    try {
+      await doc.destroy()
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function extractDocx(buffer: ArrayBuffer, fileName: string): Promise<string> {

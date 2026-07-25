@@ -94,7 +94,7 @@ function extractPosition(text: string): { position: string; confident: boolean }
   return { position: '', confident: false }
 }
 
-/** 学历标签出现处是否为负向语境（在读博士/博士后/博士生导师等，非本人已获学历） */
+/** 学历标签出现处是否为负向语境（在读博士/博士后/博士生导师/教师资格证学段等，非本人已获学历） */
 function isNegativeEducationContext(text: string, label: string, idx: number): boolean {
   if (label === '博士后') return true // 博士后是工作经历而非学历，整体排除
   const before = text.slice(Math.max(0, idx - 4), idx)
@@ -102,6 +102,10 @@ function isNegativeEducationContext(text: string, label: string, idx: number): b
   if (/在读$/.test(before) || /^在读/.test(after)) return true // 在读博士/博士在读：尚未取得
   if (label === '博士' && /^后/.test(after)) return true // 博士后：工作经历而非学历
   if (/^生?导师/.test(after)) return true // 博士生导师：身份而非本人学历
+  // 「高中数学教师资格证」中的学段字样是证书学段而非学历：命中处之后 12 字符内出现「教师资格」则跳过
+  // （只查命中之后，避免误伤「教师资格证持证者，本科学历」中位于证书之后的真实学历）
+  const afterForCert = text.slice(idx + label.length, idx + label.length + 12)
+  if (/教师资格/.test(afterForCert)) return true
   return false
 }
 
@@ -250,12 +254,20 @@ function extractTeacherCert(text: string): {
   extraCerts: string[]
 } {
   const certs: { stage: CertStage; subject: string }[] = []
+  // 先收集所有「教师资格」出现位置（「中小学教师资格考试合格证明」是合格证明而非证书，跳过，单独判定）
+  const occurrences: number[] = []
   let idx = -1
-  // 收集所有「教师资格」出现处（窗口取 [-14, +12]，避免相邻两证的窗口互相吞入对方学段/科目）
   while ((idx = text.indexOf('教师资格', idx + 1)) >= 0) {
-    // 「中小学教师资格考试合格证明」是合格证明而非证书，跳过（单独判定）
     if (text.slice(idx + 4, idx + 6) === '考试') continue
-    const window = text.slice(Math.max(0, idx - 14), idx + 12)
+    occurrences.push(idx)
+  }
+  for (let i = 0; i < occurrences.length; i++) {
+    const pos = occurrences[i]
+    // 窗口右端截到下一证「教师资格」之前（再退 4 字符，避免吞入下一证的学段/科目前缀）；
+    // 左端从上一证关键词结束之后起算，避免把上一证的学段/科目算进本证
+    const left = Math.max(0, pos - 14, i > 0 ? occurrences[i - 1] + 4 : 0)
+    const right = Math.min(pos + 12, i + 1 < occurrences.length ? occurrences[i + 1] - 4 : text.length)
+    const window = text.slice(left, right)
     const { stage, subject } = certFromWindow(window)
     if (stage || subject) {
       // 同一窗口内相邻出现处去重（同一证被多次扫描）

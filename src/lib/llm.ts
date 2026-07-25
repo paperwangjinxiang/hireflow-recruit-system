@@ -154,6 +154,8 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
   if (jsonStart < 0 || jsonEnd < 0) throw new Error('AI 返回内容不是有效 JSON')
   const parsed = JSON.parse(content.slice(jsonStart, jsonEnd + 1))
   const certStages = ['幼儿园', '小学', '初中', '高中']
+  // 学历白名单：LLM 返回名单外取值一律丢弃，回退本地解析值（防幻觉污染）
+  const eduWhitelist = ['博士', '硕士', '本科', '大专', '高中', '未知']
   // 字段级校验：手机号/邮箱/年龄不合法直接丢弃，回退本地解析值（防 LLM 幻觉污染）
   const phone =
     typeof parsed.phone === 'string' && /^1[3-9]\d{9}$/.test(parsed.phone.trim()) ? parsed.phone.trim() : undefined
@@ -170,8 +172,18 @@ export async function parseWithLlm(text: string, config: LlmConfig): Promise<Par
     phone,
     email,
     position: typeof parsed.position === 'string' ? parsed.position : undefined,
-    education: typeof parsed.education === 'string' ? parsed.education : undefined,
-    experience: typeof parsed.experience === 'number' ? parsed.experience : undefined,
+    education:
+      typeof parsed.education === 'string' && eduWhitelist.includes(parsed.education.trim())
+        ? parsed.education.trim()
+        : undefined,
+    // 教龄钳制为 0-50 整数，越界回退本地解析值
+    experience:
+      typeof parsed.experience === 'number' &&
+      Number.isInteger(parsed.experience) &&
+      parsed.experience >= 0 &&
+      parsed.experience <= 50
+        ? parsed.experience
+        : undefined,
     skills: Array.isArray(parsed.skills) ? parsed.skills.filter((s: unknown) => typeof s === 'string') : undefined,
     age,
     certStage: certStages.includes(parsed.certStage) ? parsed.certStage : undefined,

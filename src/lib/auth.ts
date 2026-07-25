@@ -82,7 +82,10 @@ export async function verifyPassword(user: Pick<User, 'salt' | 'passwordHash'>, 
     if (parts.length !== 4) return { ok: false }
     const iterations = Number(parts[1])
     const saltHex = parts[2] || user.salt
-    if (!Number.isFinite(iterations) || iterations <= 0 || !saltHex) return { ok: false }
+    // 迭代次数必须在合理区间：被篡改的数据（如 pbkdf2:999999999:...）直接验证失败，避免卡死登录页
+    if (!Number.isInteger(iterations) || iterations < 10_000 || iterations > 10_000_000 || !saltHex) {
+      return { ok: false }
+    }
     const hashHex = await pbkdf2Hex(password, saltHex, iterations)
     return { ok: hashHex === parts[3] }
   }

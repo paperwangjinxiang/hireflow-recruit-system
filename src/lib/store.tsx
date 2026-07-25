@@ -362,9 +362,12 @@ function reducer(state: State, action: Action): State {
       if (target.jobId && target.jobId !== action.jobId) return state
       // 兜底校验②：学段硬性不符（如小学教师资格证锁高中岗位）一律拒绝，
       // 与详情页共用的 checkCertFit 判定保持一致；
-      // 唯一例外：管理员在确认弹窗中显式选择「强制锁定」（force=true，活动记录留痕）
-      if (checkCertFit(target, job).level === 'block' && !action.force) return state
-      const forced = action.force && checkCertFit(target, job).level === 'block'
+      // 唯一例外：管理员在确认弹窗中显式选择「强制锁定」（force=true，活动记录留痕）。
+      // force 仅对管理员生效：非管理员调用方携带 force=true 时忽略，按普通锁定走校验
+      const isAdmin = state.users.find((u) => u.id === action.actorId)?.role === 'admin'
+      const force = !!action.force && isAdmin
+      if (checkCertFit(target, job).level === 'block' && !force) return state
+      const forced = force && checkCertFit(target, job).level === 'block'
       return {
         ...state,
         resumes: state.resumes.map((r) =>
@@ -549,6 +552,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   )
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
   const [syncLocked, setSyncLocked] = useState(false)
+  // syncLocked 的 ref 镜像：syncNow 需要同步读取锁定状态（state 更新是异步的），避免误报「同步完成」
+  const syncLockedRef = useRef(false)
   const [syncUrl, setSyncUrlState] = useState(getSyncUrl)
   const clientIdRef = useRef(getClientId())
   // 恢复上次的同步游标：本地若有未推送的修改，刷新后先推送而不是被云端覆盖
@@ -579,7 +584,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   )
 
   // doPush 冲突分支需要回调 pullAndApply（两者互相依赖，用 ref 打破循环）
-  const pullAndApplyRef = useRef<() => Promise<void>>(async () => {})
+  // 返回值表示是否成功拉取并应用（force=true 时跳过 dirty 竞态防护，供冲突分支使用）
+  const pullAndApplyRef = useRef<(force?: boolean) => Promise<boolean>>(async () => false)
 
   const doPush = useMemo(
     () => async () => {
@@ -598,11 +604,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setLastSyncAt(Date.now())
       } else if (result.status === 'conflict') {
         // 远端有其他人更新的数据：放弃本次推送（整库覆盖会丢对方数据），
-        // 拉取远端最新；本端基于旧版本的未推送修改随之失效（last-write-wins 的既定取舍）
-        dirtyRef.current = false
-        persistSyncMarks(false)
+        // 拉取远端最新；本端基于旧版本的未推送修改随之失效（last-write-wins 的既定取舍）。
+        // 注意：dirty 标记由 pullAndApply 在成功应用远端数据后自行清除；
+        // 若拉取失败则保持 dirty=true，本地未推送修改下轮仍会尝试推送，避免被远端覆盖丢失
         toast.warning('检测到云端有更新的数据，已为你拉取最新版本')
-        await pullAndApplyRef.current()
+        await pullAndApplyRef.current(true)
       } else {
         setSyncStatus('error')
       }
@@ -611,17 +617,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   )
 
   const pullAndApply = useMemo(
-    () => async () => {
+    () => async (force = false): Promise<boolean> => {
       const result = await pullRemote()
       if (result.status === 'error') {
         setSyncStatus('error')
-        return
+        return false
       }
       if (result.status === 'locked') {
-        // 云端数据已加密，但本机未设置口令或口令不匹配：不应用数据，等待用户在 UI 输入口令
+        // 云端数据已加密，但本机未设置口令或口令不匹配：不应用数据，等待用户在 UI 输入口令。
+        // 锁定是独立状态（syncLocked），不要把 syncStatus 置为 'ok'——
+        // 否则 syncNow 会误判成功并弹出「同步完成」
+        syncLockedRef.current = true
         setSyncLocked(true)
-        setSyncStatus((s) => (s === 'syncing' ? s : 'ok'))
-        return
+        setSyncStatus((s) => (s === 'syncing' ? 'idle' : s))
+        return false
       }
       const { payload } = result
       if (payload.state === null) {
@@ -629,14 +638,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dirtyRef.current = true
         persistSyncMarks(true)
         await doPush()
-        return
+        return true
       }
       if (payload.updatedAt > lastRemoteRef.current) {
         if (payload.origin !== clientIdRef.current && payload.state) {
           // 竞态防护：拉取窗口内产生的本地修改不得被整库覆盖，改走推送分支
-          if (dirtyRef.current) {
+          // （doPush 冲突分支以 force=true 调用时跳过此防护，直接应用远端）
+          if (dirtyRef.current && !force) {
             await doPush()
-            return
+            return true
           }
           // zod 结构校验：畸形数据拒绝应用、保留本地数据，绝不写入 localStorage（防砖化）
           const validation = validateSharedState(payload.state)
@@ -644,11 +654,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             console.error('远端数据校验失败，已拒绝应用：', validation.issues)
             toast.error('云端数据格式异常，已保护本地数据不被覆盖')
             setSyncStatus('error')
-            return
+            return false
           }
           lastRemoteRef.current = payload.updatedAt
           dirtyRef.current = false // 应用云端数据，避免回推造成回环
           persistSyncMarks(false, payload.updatedAt)
+          syncLockedRef.current = false
           setSyncLocked(false)
           baseDispatch({ type: 'applyRemote', ...validation.state })
         } else {
@@ -658,6 +669,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setLastSyncAt(Date.now())
       }
       setSyncStatus((s) => (s === 'syncing' ? s : 'ok'))
+      return true
     },
     [doPush, setSyncStatus],
   )
@@ -716,6 +728,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => async (): Promise<boolean> => {
       if (dirtyRef.current) await doPush()
       await doPull()
+      // 云端被口令锁定时不算同步成功，避免 UI 误弹「同步完成」
+      if (syncLockedRef.current) return false
       return syncStatusRef.current === 'ok'
     },
     [doPush, doPull],
@@ -725,6 +739,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => async (passphrase: string): Promise<void> => {
       // 口令仅存本机（绝不上云），保存后立即重试拉取；口令错误会重新进入 syncLocked
       setSyncPassphrase(passphrase)
+      syncLockedRef.current = false
       setSyncLocked(false)
       await pullAndApply()
     },
@@ -745,6 +760,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSyncUrl(url)
       setSyncUrlState(getSyncUrl())
       lastRemoteRef.current = 0
+      // 同步清除持久化的远端时间戳，否则刷新后 init 会读回旧值
+      persistSyncMarks(dirtyRef.current, 0)
       doPull()
     },
     [doPull],

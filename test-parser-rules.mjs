@@ -63,6 +63,20 @@ check('「中山大学路」不误判为院校', addr.university === '')
 const edu = parseResumeText('姓名：冯二\n2016.09-2020.06 本科毕业于华中师范大学 汉语言文学专业', 'a.pdf')
 check('正常院校可识别', edu.university === '华中师范大学')
 
+// ---- A9：相邻多教资证窗口互吞 ----
+console.log('A9 相邻多教资证')
+const adj1 = parseResumeText('姓名：张三\n小学语文教师资格证、高中数学教师资格证', 'a.pdf')
+check('小学语文+高中数学 → 主证高中数学 + 第2证提醒',
+  adj1.certStage === '高中' && adj1.certSubject === '数学' && adj1.lowConfidence.some((m) => m.includes('第 2 个教师资格证')))
+const adj2 = parseResumeText('姓名：张三\n高中数学教师资格证、小学语文教师资格证', 'a.pdf')
+check('高中数学+小学语文 → 主证高中数学 + 第2证提醒',
+  adj2.certStage === '高中' && adj2.certSubject === '数学' && adj2.lowConfidence.some((m) => m.includes('第 2 个教师资格证')))
+
+// ---- A10：教资证学段不带偏学历 ----
+console.log('A10 教资证学段与学历')
+const certEdu = parseResumeText('姓名：李四\n高中数学教师资格证持证者，本科学历', 'a.pdf')
+check('「高中数学教师资格证持证者，本科学历」→ 本科', certEdu.education === '本科')
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 fs.rmSync('.tmp-test', { recursive: true, force: true })
 process.exit(fail > 0 ? 1 : 0)

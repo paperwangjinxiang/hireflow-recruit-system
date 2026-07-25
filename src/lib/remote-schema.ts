@@ -11,14 +11,18 @@ const userSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
   role: z.enum(['admin', 'hr', 'interviewer']),
-  phone: z.string(),
+  // 登录体系上线前的旧用户只有 id/name/role/email/color，
+  // 缺 phone/passwordHash/salt/status/createdAt；applyRemote 后由 normalizeUser
+  // 用 LEGACY_USER_PHONES/LEGACY_USER_CREDENTIALS 回填并补默认值，
+  // 校验必须放行，否则会误杀线上旧数据、阻断同步
+  phone: z.string().optional(),
   email: z.string(),
   color: z.string(),
-  passwordHash: z.string(),
-  salt: z.string(),
-  status: z.enum(['active', 'pending', 'disabled']),
+  passwordHash: z.string().optional(),
+  salt: z.string().optional(),
+  status: z.enum(['active', 'pending', 'disabled']).optional(),
   mustChangePassword: z.boolean().optional(),
-  createdAt: z.number(),
+  createdAt: z.number().optional(),
 })
 
 const noteSchema = z.looseObject({
