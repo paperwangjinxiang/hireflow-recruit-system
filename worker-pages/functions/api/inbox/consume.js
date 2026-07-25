@@ -2,12 +2,7 @@
  * Pages Function: POST /api/inbox/consume — HR 入库后删除已处理投递
  * body: {ids:[行id,...]} → DELETE 这些行 → 200 {deleted:n}
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 const MAX_IDS = 500
 
 export async function onRequestOptions() {
@@ -15,6 +10,8 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   let data
   try { data = await request.json() } catch { return jsonErr('invalid json', 400) }
   const ids = Array.isArray(data?.ids)

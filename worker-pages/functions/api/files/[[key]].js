@@ -3,18 +3,15 @@
  *   GET    /api/files/resumes/xxx-yyy.pdf  按存储的 Content-Type 返回（支持 PDF 预览）
  *   DELETE /api/files/resumes/xxx-yyy.pdf  删除
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 
 export async function onRequestOptions() {
   return new Response(null, { status: 204, headers: CORS })
 }
 
-export async function onRequestGet({ env, params }) {
+export async function onRequestGet({ request, env, params }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)
@@ -36,7 +33,9 @@ export async function onRequestGet({ env, params }) {
   return new Response(body, { status: 200, headers })
 }
 
-export async function onRequestDelete({ env, params }) {
+export async function onRequestDelete({ request, env, params }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const key = keyOf(params)
   if (!key) return jsonErr('key required', 400)

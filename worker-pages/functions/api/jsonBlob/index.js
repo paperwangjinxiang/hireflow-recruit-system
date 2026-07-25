@@ -3,12 +3,7 @@
  * 存储后端：D1（SQLite），表 blobs(id TEXT PRIMARY KEY, content TEXT, updated_at INTEGER)
  * 响应格式与原 KV 版完全一致。
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 const MAX_BODY = 512 * 1024
 
 export async function onRequestOptions() {
@@ -16,6 +11,8 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   const body = await request.text()
   if (body.length > MAX_BODY) {
     return jsonErr('payload too large', 413)

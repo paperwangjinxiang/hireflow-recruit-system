@@ -14,12 +14,7 @@
  * CORS 处理方式与 functions/api/jsonBlob 保持一致（前端部署在 GitHub Pages，跨域调用）。
  */
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 
 /** 单请求体上限 4MB（前端发送单页 JPEG 的 base64，正常 <1MB） */
 const MAX_BODY = 4 * 1024 * 1024
@@ -34,6 +29,8 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   if (!env.BAIDU_OCR_API_KEY || !env.BAIDU_OCR_SECRET_KEY) {
     return jsonErr('cloud_ocr_not_configured', 501)
   }

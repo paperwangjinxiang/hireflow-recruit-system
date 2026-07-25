@@ -4,12 +4,7 @@
  * 返回 {upserted:n}
  * 路由说明：Pages 静态路由优先于动态路由，本文件优先于 [id].js 匹配 /api/candidates/bulk
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 const MAX_BODY = 8 * 1024 * 1024
 const MAX_ITEMS = 100
 const INDEX_COLS = ['name', 'cert_level', 'cert_subject', 'school', 'grad_year', 'stage', 'owner', 'status', 'tags', 'search_text']
@@ -19,6 +14,8 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   const body = await request.text()
   if (body.length > MAX_BODY) return jsonErr('payload too large', 413)
   let data

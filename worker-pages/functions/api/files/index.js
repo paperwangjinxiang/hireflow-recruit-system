@@ -4,12 +4,7 @@
  * 生成 key resumes/{uuid}-{安全文件名}。优先 R2（BUCKET），未开通时回退 KV（BLOBS，key 加 file: 前缀）。
  * → 201 {key, ok:true, store:"r2"|"kv"}
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 const MAX_BODY = 8 * 1024 * 1024      // JSON 信封（base64 约膨胀 4/3）
 const MAX_FILE = 4 * 1024 * 1024      // 解码后文件内容上限
 
@@ -18,6 +13,8 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestPost({ request, env }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   if (!env.BUCKET && !env.BLOBS) return jsonErr('no storage configured', 501)
   const body = await request.text()
   if (body.length > MAX_BODY) return jsonErr('payload too large', 413)

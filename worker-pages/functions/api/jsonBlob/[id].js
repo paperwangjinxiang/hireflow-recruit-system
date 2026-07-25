@@ -3,19 +3,16 @@
  * 存储后端：D1（SQLite），表 blobs(id TEXT PRIMARY KEY, content TEXT, updated_at INTEGER)
  * 响应格式与原 KV 版完全一致。
  */
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Accept',
-  'Access-Control-Max-Age': '86400',
-}
+import { CORS, requireAuth } from '../_auth.js'
 const MAX_BODY = 512 * 1024
 
 export async function onRequestOptions() {
   return new Response(null, { status: 204, headers: CORS })
 }
 
-export async function onRequestGet({ env, params }) {
+export async function onRequestGet({ request, env, params }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   const row = await env.DB.prepare('SELECT content FROM blobs WHERE id = ?')
     .bind(params.id)
     .first()
@@ -24,6 +21,8 @@ export async function onRequestGet({ env, params }) {
 }
 
 export async function onRequestPut({ request, env, params }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   const body = await request.text()
   if (body.length > MAX_BODY) return jsonErr('payload too large', 413)
   try { JSON.parse(body) } catch { return jsonErr('invalid json', 400) }
@@ -36,7 +35,9 @@ export async function onRequestPut({ request, env, params }) {
   return new Response(body, { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } })
 }
 
-export async function onRequestDelete({ env, params }) {
+export async function onRequestDelete({ request, env, params }) {
+  const unauth = await requireAuth(request, env)
+  if (unauth) return unauth
   await env.DB.prepare('DELETE FROM blobs WHERE id = ?').bind(params.id).run()
   return new Response(JSON.stringify({ deleted: true }), {
     status: 200, headers: { ...CORS, 'Content-Type': 'application/json' },
