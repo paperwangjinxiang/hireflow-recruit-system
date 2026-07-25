@@ -11,6 +11,8 @@ import { parseResumeText, type ParsedFields } from '@/lib/parser'
 import { tagColor } from '@/lib/tags'
 import { getLlmConfig, saveLlmConfig, parseWithLlm, mergeParsed, matchProviderPreset, LLM_PROVIDER_PRESETS, type LlmConfig } from '@/lib/llm'
 import { maskIdCard } from '@/lib/regions'
+import { saveResumeFile } from '@/lib/filestore'
+import { matchDuplicates } from '@/lib/dedup'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -31,12 +33,19 @@ interface FileItem {
   progress?: string
   rawText: string
   fields: ParsedFields
+  /** 原始文件（导入成功后存入本机 IndexedDB 供原件预览；粘贴解析无文件） */
+  file?: File
 }
 
 const EDUCATION_OPTIONS = ['博士', '硕士', '本科', '大专', '高中', '未知']
 
 function uid() {
   return `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 预生成简历 ID：导入成功后以此 ID 把原件存入本机 IndexedDB */
+function rid() {
+  return `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 export default function AiParse() {
@@ -79,7 +88,7 @@ export default function AiParse() {
         toast.error(`不支持的格式：${file.name}（支持 PDF / DOCX / TXT / MD）`)
         continue
       }
-      const item: FileItem = { id: uid(), fileName: file.name, status: 'processing', rawText: '', fields: emptyFields() }
+      const item: FileItem = { id: uid(), fileName: file.name, status: 'processing', rawText: '', fields: emptyFields(), file }
       pairs.push({ item, file })
     }
     setItems((prev) => [...pairs.map((p) => p.item), ...prev])
@@ -135,8 +144,13 @@ export default function AiParse() {
       toast.error('没有可导入的简历（姓名不能为空）')
       return
     }
-    const candidates = importable.map((i) => ({
-      name: i.fields.name.trim(),
+    const fileByResumeId = new Map<string, File>()
+    const candidates = importable.map((i) => {
+      const resumeId = rid()
+      if (i.file) fileByResumeId.set(resumeId, i.file)
+      return {
+        id: resumeId,
+        name: i.fields.name.trim(),
       phone: i.fields.phone,
       email: i.fields.email,
       position: i.fields.position,
@@ -160,13 +174,19 @@ export default function AiParse() {
       stage: 'imported' as const,
       assigneeId: null,
       initialNote: `【${i.fileName} 解析导入】原文摘要：\n${i.rawText.slice(0, 400)}${i.rawText.length > 400 ? '……' : ''}`,
-    }))
+      }
+    })
     const { unique, skipped } = filterDuplicateResumes(candidates, resumes)
     if (unique.length === 0) {
       toast.error('全部为重复简历（手机号/邮箱已存在），未导入')
       return
     }
     dispatch({ type: 'importResumes', actorId: currentUser.id, resumes: unique })
+    // 原件存本机 IndexedDB（隐私模式等不可用时静默失败，不影响导入）
+    for (const c of unique) {
+      const f = fileByResumeId.get(c.id)
+      if (f) void saveResumeFile(c.id, f)
+    }
     toast.success(`成功导入 ${unique.length} 份简历${skipped > 0 ? `，跳过 ${skipped} 份重复` : ''}`)
     navigate('/resumes')
   }
@@ -387,6 +407,21 @@ export default function AiParse() {
                       {item.method === 'ai' ? 'AI 解析' : '本地引擎'}
                     </Badge>
                   )}
+                  {item.status === 'done' &&
+                    matchDuplicates(
+                      {
+                        name: item.fields.name,
+                        phone: item.fields.phone,
+                        email: item.fields.email,
+                        idCard: item.fields.idCard,
+                        gradYear: item.fields.gradYear,
+                      },
+                      resumes,
+                    ).length > 0 && (
+                      <Badge variant="secondary" className="bg-slate-200 text-slate-500 hover:bg-slate-200" title="与简历库中已有简历疑似重复">
+                        重复
+                      </Badge>
+                    )}
                   {item.status === 'error' && (
                     <Badge className="bg-rose-100 text-rose-700 hover:bg-rose-100">
                       <AlertTriangle className="mr-1 h-3 w-3" />解析失败

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'date-fns'
 import { useStore } from '@/lib/store'
 import {
@@ -27,10 +27,16 @@ import {
   Mail, Phone, Briefcase, GraduationCap, Clock, Tag, Star, Building2, School,
   Award, MapPin, CalendarDays, BookOpen, Lock, Unlock, BedDouble, IdCard,
   Gauge, AlertTriangle, Info, OctagonAlert, FileText, ClipboardList, Pencil, ShieldAlert,
+  CheckCircle, Sparkles, Loader2, Copy, Upload, Download, Users, Paperclip,
 } from 'lucide-react'
+import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from 'recharts'
 import { tagColor } from '@/lib/tags'
 import { scoreColor, scoreLabel, checkCertFit } from '@/lib/match'
 import { evaluateResume, GRADE_COLORS, GRADE_LABELS, type EvalAlert } from '@/lib/evaluate'
+import { generateCandidateSummary, isSummaryAiReady, polishSummaryWithLlm } from '@/lib/summary'
+import { parseExperiences } from '@/lib/timeline'
+import { fileStoreSupported, getResumeFile, saveResumeFile, type StoredResumeFile } from '@/lib/filestore'
+import { findDuplicates } from '@/lib/dedup'
 import { regionFromIdCard, genderFromIdCard, birthFromIdCard, maskIdCard, isValidIdCard } from '@/lib/regions'
 import InterviewSection from './InterviewSection'
 import { toast } from 'sonner'
@@ -99,12 +105,15 @@ export default function ResumeDetail({
   resume,
   open,
   onOpenChange,
+  onSelectResume,
 }: {
   resume: Resume | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** 切换到另一份简历（重复简历/相似候选人点击跳转） */
+  onSelectResume?: (resumeId: string) => void
 }) {
-  const { users, jobs, currentUser, dispatch } = useStore()
+  const { resumes, users, jobs, currentUser, dispatch } = useStore()
   const [note, setNote] = useState('')
   const [matchLevel, setMatchLevel] = useState<SchoolLevel | 'all'>('all')
   const [matchJobId, setMatchJobId] = useState('')
@@ -112,6 +121,54 @@ export default function ResumeDetail({
   const [form, setForm] = useState<EditForm | null>(null)
   // 教资硬约束确认弹窗：warn/block 时挂起待锁定的职位
   const [certCheck, setCertCheck] = useState<{ jobId: string; level: 'warn' | 'block'; messages: string[] } | null>(null)
+  // AI 润色后的画像（null = 使用规则摘要）
+  const [aiSummary, setAiSummary] = useState<string | null>(null)
+  const [polishing, setPolishing] = useState(false)
+  // 简历原件（IndexedDB 本机存储）
+  const [rawFile, setRawFile] = useState<StoredResumeFile | null>(null)
+  const [fileChecked, setFileChecked] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const resumeId = resume?.id ?? ''
+
+  // 切换简历时重置画像润色结果与原件
+  useEffect(() => {
+    setAiSummary(null)
+    setPolishing(false)
+  }, [resumeId])
+  useEffect(() => {
+    let alive = true
+    setRawFile(null)
+    setFileChecked(false)
+    if (!resumeId) return
+    getResumeFile(resumeId).then((f) => {
+      if (alive) {
+        setRawFile(f)
+        setFileChecked(true)
+      }
+    })
+    return () => {
+      alive = false
+    }
+  }, [resumeId])
+
+  // 原件 blob URL：组件卸载或文件变化时释放
+  const fileUrl = useMemo(() => {
+    if (!rawFile) return null
+    try {
+      return URL.createObjectURL(rawFile.blob)
+    } catch {
+      return null
+    }
+  }, [rawFile])
+  useEffect(() => {
+    return () => {
+      if (fileUrl) URL.revokeObjectURL(fileUrl)
+    }
+  }, [fileUrl])
+
+  // 经历时间线解析（空原文返回空数组）
+  const experiences = useMemo(() => parseExperiences(resume?.rawText ?? ''), [resume?.rawText])
 
   if (!resume) return null
   const assignee = users.find((u) => u.id === resume.assigneeId)
@@ -179,6 +236,64 @@ export default function ResumeDetail({
   // 综合评估：锁定岗位后按岗位评估
   const evaluation = evaluateResume(resume, lockedJob ?? null)
 
+  // 候选人画像（规则摘要；AI 润色成功时展示润色文本）
+  const summary = generateCandidateSummary(resume, lockedJob ?? null)
+  const summaryText = aiSummary ?? summary.text
+
+  // 疑似重复简历
+  const duplicates = findDuplicates(resume, resumes)
+
+  // 相似候选人（规则打分取前 5，排除自身/黑名单/已入职）
+  const similarCandidates = resumes
+    .filter((c) => c.id !== resume.id && c.stage !== 'blacklisted' && c.stage !== 'onboarded')
+    .map((c) => {
+      let score = 0
+      if (resume.certSubject && c.certSubject === resume.certSubject) score += 3
+      if (resume.certStage && c.certStage === resume.certStage) score += 2
+      if (resume.major && c.major === resume.major) score += 2
+      if (resume.university && c.university === resume.university) score += 2
+      score += c.tags.filter((t) => resume.tags.includes(t)).length
+      if (resume.hometown && c.hometown === resume.hometown) score += 1
+      return { c, score }
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+
+  /** AI 润色候选人画像；失败回退规则摘要 */
+  const polishSummary = async () => {
+    setPolishing(true)
+    try {
+      const text = await polishSummaryWithLlm(resume)
+      setAiSummary(text)
+      toast.success('AI 润色完成')
+    } catch (e) {
+      console.warn('AI 润色失败，回退规则摘要：', e)
+      setAiSummary(null)
+      toast.error('AI 润色失败，已回退到规则摘要')
+    } finally {
+      setPolishing(false)
+    }
+  }
+
+  /** 上传简历原件到本机 IndexedDB */
+  const handleUploadFile = async (file: File) => {
+    const ok = await saveResumeFile(resume.id, file)
+    if (ok) {
+      const stored = await getResumeFile(resume.id)
+      setRawFile(stored ?? { blob: file, name: file.name, type: file.type })
+      setFileChecked(true)
+      toast.success('原件已保存到本机浏览器')
+    } else {
+      toast.error('保存失败：当前浏览器不支持本地文件存储（可能处于隐私模式）')
+    }
+  }
+
+  const rawFileName = rawFile?.name ?? ''
+  const rawFileType = rawFile?.type ?? ''
+  const isPdfFile = !!rawFile && (rawFileType.includes('pdf') || /\.pdf$/i.test(rawFileName))
+  const isImageFile = !!rawFile && (rawFileType.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp)$/i.test(rawFileName))
+
   // 身份证解析
   const idCardValid = isValidIdCard(resume.idCard)
   const region = idCardValid ? regionFromIdCard(resume.idCard) : null
@@ -228,6 +343,70 @@ export default function ResumeDetail({
         </SheetHeader>
         <ScrollArea className="h-[calc(100vh-6rem)] pr-4">
           <div className="mt-4 space-y-6">
+            {/* 候选人画像（AI 摘要卡） */}
+            <div className="space-y-3 rounded-lg border border-indigo-100 bg-indigo-50/40 p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                  <Sparkles className="h-4 w-4 text-indigo-600" />候选人画像
+                </h3>
+                {isSummaryAiReady() && (
+                  <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={polishing} onClick={polishSummary}>
+                    {polishing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Sparkles className="mr-1 h-3 w-3" />}
+                    {polishing ? '润色中…' : 'AI 润色'}
+                  </Button>
+                )}
+              </div>
+              <p className="text-sm leading-relaxed text-slate-700">{summaryText}</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-emerald-600">亮点</div>
+                  {summary.highlights.length > 0 ? (
+                    <ul className="space-y-1">
+                      {summary.highlights.map((h, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-slate-600">
+                          <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />{h}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-slate-400">暂无明显亮点</p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-rose-600">风险</div>
+                  {summary.risks.length > 0 ? (
+                    <ul className="space-y-1">
+                      {summary.risks.map((r, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-slate-600">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />{r}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-slate-400">暂无风险提示</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 疑似重复简历提示 */}
+            {duplicates.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <Copy className="h-4 w-4 shrink-0" />
+                <span className="font-medium">检测到 {duplicates.length} 份疑似重复简历：</span>
+                {duplicates.map((d) => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => onSelectResume?.(d.id)}
+                    className={`rounded-full border border-amber-300 bg-white px-2 py-0.5 text-xs ${onSelectResume ? 'hover:bg-amber-100' : 'cursor-default'}`}
+                  >
+                    {d.name}（{d.source}·{STAGE_LABELS[d.stage]}）
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* 教师档案 */}
             <div className="flex justify-end">
               <Button size="sm" variant="outline" onClick={openEdit}>
@@ -337,6 +516,19 @@ export default function ResumeDetail({
                       {lockedJob ? `按锁定岗位「${lockedJob.school}·${lockedJob.level}${lockedJob.subject}」评估` : '未锁定岗位，按通用标准评估'}
                     </div>
                   </div>
+                </div>
+                {/* 七维度评估雷达图（雷达看全貌、下方进度条看数值） */}
+                <div className="mt-4 flex justify-center">
+                  <RadarChart
+                    width={280}
+                    height={220}
+                    data={evaluation.dimensions.map((d) => ({ dim: d.label, score: d.score }))}
+                  >
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="dim" tick={{ fontSize: 11, fill: '#64748b' }} />
+                    <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                    <Radar dataKey="score" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} />
+                  </RadarChart>
                 </div>
                 <div className="mt-4 space-y-2.5">
                   {evaluation.dimensions.map((d) => (
@@ -498,6 +690,41 @@ export default function ResumeDetail({
               </>
             )}
 
+            {/* 经历时间线（从简历原文解析） */}
+            {experiences.length > 0 && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  <h3 className="flex items-center gap-1.5 font-semibold">
+                    <Clock className="h-4 w-4 text-slate-500" />经历时间线
+                  </h3>
+                  <ol className="space-y-4">
+                    {experiences.map((e, i) => (
+                      <li key={i} className="flex gap-3">
+                        <div className="flex flex-col items-center">
+                          <span
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-white ${
+                              e.kind === 'edu' ? 'border-sky-200 text-sky-600' : 'border-emerald-200 text-emerald-600'
+                            }`}
+                          >
+                            {e.kind === 'edu' ? <GraduationCap className="h-3.5 w-3.5" /> : <Briefcase className="h-3.5 w-3.5" />}
+                          </span>
+                          {i < experiences.length - 1 && <span className="mt-1 w-px flex-1 bg-slate-200" />}
+                        </div>
+                        <div className="min-w-0 pb-1">
+                          <div className="text-xs font-medium tabular-nums text-slate-400">{e.start} — {e.end}</div>
+                          <div className="text-sm font-medium text-slate-700">{e.org}</div>
+                          {e.detail && (
+                            <div className="truncate text-xs text-slate-500" title={e.detail}>{e.detail}</div>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </>
+            )}
+
             {/* 简历原文 */}
             <Separator />
             <Accordion type="single" collapsible>
@@ -519,6 +746,67 @@ export default function ResumeDetail({
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
+
+            {/* 原件预览（IndexedDB 本机存储，不参与云端同步；不支持时整块隐藏） */}
+            {fileStoreSupported() && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="flex items-center gap-1.5 font-semibold">
+                      <Paperclip className="h-4 w-4 text-slate-500" />原件预览
+                    </h3>
+                    {rawFile && (
+                      <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-indigo-600" onClick={() => fileInputRef.current?.click()}>
+                        更换原件
+                      </Button>
+                    )}
+                  </div>
+                  {!fileChecked ? (
+                    <p className="text-xs text-slate-400">正在读取本机原件…</p>
+                  ) : rawFile && fileUrl ? (
+                    <>
+                      {isPdfFile ? (
+                        <iframe src={fileUrl} className="h-[500px] w-full rounded-lg border bg-white" title={`简历原件 · ${rawFile.name}`} />
+                      ) : isImageFile ? (
+                        <img src={fileUrl} alt={rawFile.name} className="max-h-[500px] w-auto rounded-lg border" />
+                      ) : (
+                        <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed p-3">
+                          <span className="flex min-w-0 items-center gap-2 text-sm text-slate-600">
+                            <FileText className="h-4 w-4 shrink-0 text-slate-400" />
+                            <span className="truncate">{rawFile.name}</span>
+                          </span>
+                          <Button size="sm" variant="outline" asChild>
+                            <a href={fileUrl} download={rawFile.name}>
+                              <Download className="mr-1.5 h-3.5 w-3.5" />下载原件
+                            </a>
+                          </Button>
+                        </div>
+                      )}
+                      <p className="text-xs text-slate-400">原件仅保存在本机浏览器，不占用云端同步</p>
+                    </>
+                  ) : (
+                    <div className="space-y-2 rounded-lg border border-dashed p-4 text-center">
+                      <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()}>
+                        <Upload className="mr-1.5 h-3.5 w-3.5" />上传原件
+                      </Button>
+                      <p className="text-xs text-slate-400">原件仅保存在本机浏览器，不占用云端同步</p>
+                    </div>
+                  )}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    accept=".pdf,.doc,.docx,.txt,.md,image/*"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0]
+                      if (f) handleUploadFile(f)
+                      e.target.value = ''
+                    }}
+                  />
+                </div>
+              </>
+            )}
 
             <Separator />
 
@@ -594,6 +882,45 @@ export default function ResumeDetail({
                 保存备注
               </Button>
             </div>
+
+            {/* 相似候选人（人才库激活：规则相似度前 5） */}
+            {similarCandidates.length > 0 && (
+              <>
+                <Separator />
+                <div className="space-y-3">
+                  <h3 className="flex items-center gap-1.5 font-semibold">
+                    <Users className="h-4 w-4 text-indigo-600" />相似候选人
+                  </h3>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {similarCandidates.map(({ c }) => {
+                      const ev = evaluateResume(c)
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => onSelectResume?.(c.id)}
+                          disabled={!onSelectResume}
+                          className="space-y-1.5 rounded-lg border p-3 text-left transition-colors enabled:hover:border-indigo-300 enabled:hover:bg-indigo-50/40 disabled:cursor-default"
+                        >
+                          <div className="font-medium">{c.name}</div>
+                          <div className="text-xs text-slate-400">
+                            {c.certStage ? `${c.certStage}${c.certSubject}` : c.position || '—'}
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            <Badge variant="outline" className={`px-1.5 py-0 text-[10px] ${GRADE_COLORS[ev.grade]}`}>
+                              {ev.grade} · {ev.overall}
+                            </Badge>
+                            <Badge variant="outline" className={`px-1.5 py-0 text-[10px] ${STAGE_COLORS[c.stage]}`}>
+                              {STAGE_LABELS[c.stage]}
+                            </Badge>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
 
             <Separator />
 

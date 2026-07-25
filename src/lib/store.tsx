@@ -48,6 +48,8 @@ export type ImportableResume = Omit<
   | 'age' | 'certStage' | 'certSubject' | 'certQualified' | 'gradYear' | 'hometown' | 'fullTime' | 'major' | 'jobId' | 'lockedBy' | 'lockedAt'
   | 'idCard' | 'rawText'
 > & {
+  /** 可选预生成 ID（导入方需要提前知道简历 ID 时使用，如关联本机原件存储） */
+  id?: string
   /** 导入时附带的初始备注（如 AI 解析的原文摘要） */
   initialNote?: string
   university?: string
@@ -174,7 +176,7 @@ function reducer(state: State, action: Action): State {
           lockedBy: null,
           lockedAt: null,
           ...fields,
-          id: uid('r'),
+          id: fields.id ?? uid('r'),
           createdAt: now,
           updatedAt: now,
           notes: initialNote

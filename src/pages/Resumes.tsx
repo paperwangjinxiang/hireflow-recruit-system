@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
-import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock, Contact } from 'lucide-react'
+import { Search, FileUp, Trash2, UserPlus, RefreshCw, Sparkles, List, LayoutGrid, Download, Star, Lock, Contact, GitCompareArrows } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/lib/store'
 import { tagColor } from '@/lib/tags'
@@ -19,6 +19,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import ResumeDetail from './ResumeDetail'
 import ResumesKanban from './ResumesKanban'
+import CompareDialog from '@/components/CompareDialog'
+import { deleteResumeFile } from '@/lib/filestore'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 export default function Resumes() {
@@ -32,6 +34,7 @@ export default function Resumes() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [detailId, setDetailId] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
   const [view, setView] = useState<'table' | 'kanban'>('table')
 
   const positions = useMemo(() => [...new Set(resumes.map((r) => r.position))].sort(), [resumes])
@@ -184,6 +187,16 @@ export default function Resumes() {
               {STAGE_ORDER.filter((s) => s !== 'matched').map((s) => <SelectItem key={s} value={s}>{STAGE_LABELS[s]}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            className="bg-white"
+            disabled={selectedIds.length < 2 || selectedIds.length > 4}
+            title="勾选 2-4 份简历进行并排对比"
+            onClick={() => setCompareOpen(true)}
+          >
+            <GitCompareArrows className="mr-1 h-3.5 w-3.5" />对比（{selectedIds.length}）
+          </Button>
           <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
             <Trash2 className="mr-1 h-3.5 w-3.5" />删除
           </Button>
@@ -309,7 +322,17 @@ export default function Resumes() {
       </div>
       )}
 
-      <ResumeDetail resume={detailResume} open={!!detailResume} onOpenChange={(o) => !o && setDetailId(null)} />
+      <ResumeDetail resume={detailResume} open={!!detailResume} onOpenChange={(o) => !o && setDetailId(null)} onSelectResume={setDetailId} />
+
+      <CompareDialog
+        resumes={selectedIds.map((id) => resumes.find((r) => r.id === id)).filter((r): r is Resume => !!r)}
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        onView={(id) => {
+          setCompareOpen(false)
+          setDetailId(id)
+        }}
+      />
 
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent>
@@ -323,6 +346,8 @@ export default function Resumes() {
               className="bg-rose-600 hover:bg-rose-700"
               onClick={() => {
                 dispatch({ type: 'deleteResumes', ids: selectedIds })
+                // 同步清理本机 IndexedDB 中的简历原件（失败静默忽略）
+                selectedIds.forEach((id) => void deleteResumeFile(id))
                 toast.success(`已删除 ${selectedIds.length} 份简历`)
                 setSelected(new Set())
               }}
